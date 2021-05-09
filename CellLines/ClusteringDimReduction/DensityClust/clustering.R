@@ -13,7 +13,7 @@ cols <- c("H1-ESC" = "#a6cee3", "BJ" = "#1f78b4",
           "GM12878" = "#b2df8a", "K562" = "#33a02c",
           "HL60" = "#fb9a99", "TF1" = "#e31a1c")
 
-data_list <- c("cisTopic", "scOpen", "Cusanovich2018", "SnapATAC")
+data_list <- c("cisTopic", "scOpen", "Cusanovich2018")
 
 
 for (data in data_list) {
