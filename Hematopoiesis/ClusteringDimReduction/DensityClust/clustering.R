@@ -14,7 +14,7 @@ cols <- c("CLP" = "#98D9E9", "CMP" = "#FFC179",
           "LMPP" = "#00AF99", "MEP" = "#F6313E",
           "MPP" = "#46A040", "pDC" = "#C390D4")
 
-data_list <- c("cisTopic", "scOpen", "Cusanovich2018", "SnapATAC")
+data_list <- c("cisTopic", "scOpen", "Cusanovich2018")
 
 
 for (data in data_list) {

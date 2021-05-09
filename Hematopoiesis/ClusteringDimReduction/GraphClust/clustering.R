@@ -11,7 +11,7 @@ library(Rtsne)
 library(Seurat)
 
 
-data_list <- c("cisTopic", "scOpen", "Cusanovich2018", "SnapATAC")
+data_list <- c("SnapATAC")
 
 
 for (data in data_list) {
