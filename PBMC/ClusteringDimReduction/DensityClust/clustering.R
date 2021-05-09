@@ -24,7 +24,7 @@ cols <- c("naive_CD4_T_cells" = "#fb9a99",
           "myeloid_DC" = "#b15928",
           "plasmacytoid_DC" = "#33a02c")
 
-data_list <- c("cisTopic", "scOpen", "Cusanovich2018", "SnapATAC")
+data_list <- c("cisTopic", "scOpen", "Cusanovich2018")
 
 
 for (data in data_list) {
