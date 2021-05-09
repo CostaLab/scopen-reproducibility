@@ -14,7 +14,7 @@ cols <- c("Jurkat_T_cell" = "#33a02c",
           "Naive_T_cell" = "#e31a1c",
           "Th17_T_cell" = "#cab2d6")
 
-data_list <- c("cisTopic", "scOpen", "Cusanovich2018", "SnapATAC")
+data_list <- c("cisTopic", "scOpen", "Cusanovich2018")
 
 
 for (data in data_list) {
