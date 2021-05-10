@@ -1,0 +1,68 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+
+```{r}
+df <- read.csv("../data/uuo.integrated.annotated.scOpen.csv")
+pal <- ArchR::paletteDiscrete(values = df$CellType)
+
+df$Sample <- stringr::str_replace_all(df$Sample, c("D0_1" = "Day 0",
+                                                   "D0_2" = "Day 0",
+                                                   "D2_1" = "Day 2",
+                                                   "D2_2" = "Day 2",
+                                                   "D10_1" = "Day 10",
+                                                   "D10_2" = "Day 10"))
+
+```
+
+```{r, fig.height=6, fig.width=10}
+df.plot <- df %>%
+    group_by(Sample, CellType) %>%
+    summarise(counts = n()) %>%
+    mutate(frac = counts / sum(counts))
+
+df.plot$Sample <- factor(df.plot$Sample, levels = c("Day 0", "Day 2", "Day 10"))
+
+p <- ggplot(data = df.plot, aes(x = Sample, y = frac, fill = CellType)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = pal) +
+    facet_wrap(~CellType, nrow = 3, scales = "free_y") +
+    xlab("") + ylab("Fraction of cells") +
+    theme_cowplot() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 30, hjust = 1))
+
+p
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,138 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+
+## loadd p2g links
+```{r load_p2g}
+df_p2g <- read.csv("../data/Fibroblast/p2g_scOpen.csv", row.names = 1) %>%
+    subset(., Distance > 0 & FDR < 0.05) %>%
+    subset(., select = c("gene", "peak", "Correlation", "Distance"))
+df_p2g$gene <- toupper(df_p2g$gene)
+```
+
+## load DE results
+```{r}
+library(DESeq2)
+
+load("../../../RUNX1_RNA/results/star_salmon/deseq2_qc/deseq2.dds.RData")
+res <- results(dds) %>%
+  as.data.frame() %>%
+  subset(., !is.na(log2FoldChange) &!is.na(padj)) %>%
+    subset(., select = c("log2FoldChange", "padj")) %>%
+    subset(., padj < 0.05)
+
+res$gene <- rownames(res)
+res$regulation_Runx1overexpression <- ifelse(res$log2FoldChange > 0, "up", "down")
+```
+
+
+## merge data frames
+```{r}
+df <- merge.data.frame(res, df_p2g)
+```
+
+
+## get Runx1 binding sites
+```{r}
+Runx1BindingSites <- read.table("../../HINT/FootprintingFibroblast/RUNX1.bed")
+gr <- GRanges(seqnames = Runx1BindingSites$V1, 
+              IRanges(start = as.numeric(Runx1BindingSites$V2),
+                      end = as.numeric(Runx1BindingSites$V3)))
+
+
+peak_chr <- stringr::str_split_fixed(df$peak, "_", 3)[, 1]
+peak_start <- stringr::str_split_fixed(df$peak, "_", 3)[, 2]
+peak_end <- stringr::str_split_fixed(df$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = peak_chr,
+                         IRanges(start = as.numeric(peak_start),
+                                 end = as.numeric(peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+
+df$Runx1Binding <- 0
+df$Runx1Binding[o@from] <- 1
+```
+
+
+## load ArchR project
+```{r}
+proj <- loadArchRProject(path = "../data/Fibroblast")
+
+markers <- getMarkerFeatures(
+  ArchRProj = proj, 
+  useMatrix = "GeneScoreMatrix",
+  groupBy = "CellType",
+  testMethod = "wilcoxon",
+  bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "Myofibroblast",
+  bgdGroups = "Fib_Scara5"
+)
+
+pv <- plotMarkers(seMarker = markers, 
+                  name = "Myofibroblast", 
+                  cutOff = "FDR <= 0.1", 
+                  plotAs = "Volcano")
+pv
+
+
+
+df_de <- assays(markers) %>% Reduce(cbind, .)
+colnames(df_de) <- names(assays(markers))
+df_de$gene <- toupper(rowData(markers)$name)
+
+df_de <- subset(df_de, select = c("gene", "Log2FC", "FDR"))
+colnames(df_de) <- c("gene", "Log2FC_UUO", "FDR_UUO")
+df_de$regulation_UUO <- ifelse(df_de$Log2FC > 0, "up", "down")
+```
+
+## merge
+```{r}
+df <- merge.data.frame(df, df_de)
+
+colnames(df) <- c("gene",
+                  "log2FC_Runx1overexpression",
+                  "padj_Runx1overexpression",
+                  "regulation_Runx1overexpression",
+                  "peak",
+                  "Correlation",
+                  "Distance",
+                  "Runx1Binding",
+                  "log2FC_UUO",
+                  "padj_UUO",
+                  "regulation_UUO")
+
+write.csv(df, file = "../data/Fibroblast/scOpen_p2g_DE_Runx1.csv",
+          row.names = FALSE, quote = FALSE)
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

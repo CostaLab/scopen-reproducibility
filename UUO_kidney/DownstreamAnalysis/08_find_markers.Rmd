@@ -1,0 +1,167 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+
+```{r}
+proj <- loadArchRProject(path = "../../ArchR/UUO")
+uuo.atac <- readRDS("../data/uuo.integrated.scOpen.Rds")
+
+df <- uuo.atac@meta.data
+df <- df[rownames(proj), ]
+
+proj <- addCellColData(proj, data = as.character(df$pam_clusters),
+                       cells = rownames(proj),
+                       name = "pam_clusters",
+                       force = TRUE)
+
+proj <- addCellColData(proj, data = as.character(df$predicted.id),
+                       cells = rownames(proj),
+                       name = "predicted.id",
+                       force = TRUE)
+```
+
+## confusion matrix
+```{r}
+library(tidyr)
+library(circlize)
+library(ComplexHeatmap)
+
+df.plot <- df %>%
+    group_by(pam_clusters, predicted.id) %>%
+    summarise(counts = n()) %>%
+    mutate(frac=round(counts/sum(counts), 4)) %>%
+    subset(., select = c("pam_clusters", "predicted.id", "frac")) %>%
+    spread(., predicted.id, 
+           value = frac, fill = 0)
+
+rownames(df.plot) <- paste0("C", df.plot$pam_clusters) 
+df.plot$pam_clusters <- NULL
+
+mat <- as.matrix(t(df.plot))
+colnames(mat) <- rownames(df.plot)
+
+cols <- colorRamp2(c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9), 
+                   c("white", "#ffffd9", '#edf8b1', "#c7e9b4", "#7fcdbb", "#41b6c4",
+                     "#1d91c0", "#225ea8", "#253494", "#081d58"))
+
+p <- Heatmap(mat,
+             name = "Perc.",
+             cluster_rows = FALSE, 
+             cluster_columns = FALSE,
+             show_column_names = TRUE,
+             show_row_names = TRUE,
+             row_order = c("PT(S2)", "TAL", "PT(S3)", "DCT", "PT(S1)",
+                           "CD-PC", "EC", "Fib.1", "IC", "CNT",
+                           "DL and tAL", "Ma", "Pod", "JGA", "Fib.2",
+                           "Dediff. PT"),
+             row_names_side = "left",
+             column_names_side = "bot",
+             col = cols)
+
+
+draw(p)
+```
+
+
+# find marker
+```{r, fig.height=8, fig.width=6}
+known.markers <- c("Flt1", "Erg", # EC
+                   "Tmem117", # IC
+                   "Slc14a2", # DL & TAL
+                   "C1qa", "C1qb", # Mac
+                   "Cd1d", "Lta", "Ltb", # Lymphoid
+                   "Aqp4", # CD-PC
+                   "Slc12a1", "Umod", # TAL
+                   "Slc12a3", # DCT
+                   "Scnn1g", # CNT
+                   "Pdgfrb", # Fibroblast
+                   "Fbln2", "Dcn", # MyoFibroblast
+                   "Wt1", "Nphs1", "Nphs2", # Pod
+                   "Vcam1", "Havcr1", # Injured PT
+                   "Lrp2", # PT (S1)
+                   "Slc5a12", # PT (S2)
+                   "Slc27a2"# PT (S3)
+                   )
+
+
+markersGS <- getMarkerFeatures(
+    ArchRProj = proj, 
+    useMatrix = "GeneScoreMatrix", 
+    groupBy = "pam_clusters",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon",
+    verbose = FALSE
+)
+
+markerList <- getMarkers(markersGS, cutOff = "FDR <= 0.01 & Log2FC >= 1.25")
+
+heatmapGS <- plotMarkerHeatmap(
+  seMarker = markersGS, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25",
+  labelMarkers = known.markers
+)
+
+ComplexHeatmap::draw(heatmapGS, 
+                     heatmap_legend_side = "bot", 
+                     annotation_legend_side = "bot",
+                     show_column_dend = FALSE)
+
+markerList <- lapply(markerList, as.data.frame)
+
+saveRDS(markersGS, file = "../data/MarkerGenesForClusters.Rds")
+
+for(i in 1:length(markerList)){
+    markerList[[i]] <- markerList[[i]][order(-markerList[[i]]$Log2FC), ]
+}
+
+WriteXLS(markerList,
+         ExcelFileName = "../data/MarkerGenesForClusters.xlsx",
+         SheetNames = names(markerList))
+
+```
+
+
+## save data
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

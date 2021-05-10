@@ -1,0 +1,192 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+
+```{r load_data}
+proj <- loadArchRProject(path = "../data/Fibroblast")
+```
+
+
+## add trajectory
+```{r, fig.height=6, fig.width=6}
+trajectory <- c("C3", "C2")
+
+proj <- addTrajectory(
+    ArchRProj = proj, 
+    name = "Fib", 
+    groupBy = "Clusters",
+    trajectory = trajectory, 
+    preFilterQuantile = 0.9,
+    postFilterQuantile = 0.95,
+    useAll = TRUE,
+    embedding = "dm", 
+    force = TRUE
+)
+
+p <- plotTrajectory(proj, trajectory = "Fib", 
+                    colorBy = "cellColData",
+                    continuousSet = "blueYellow",
+                    name = "Fib",
+                    embedding = "dm",
+                    plotAs = "points",
+                    rastr = FALSE,
+                    smoothWindow = 35,
+                    size = 1)
+
+p1 <- p[[1]] + 
+    theme_cowplot() +
+    xlab("UMAP 1") + ylab("UMAP 2") +
+    ggtitle("")
+
+p1
+```
+
+##
+```{r, fig.height=10, fig.width=6}
+trajMM  <- getTrajectory(ArchRProj = proj,
+                         name = "Fib",
+                         useMatrix = "MotifMatrix",
+                         log2Norm = FALSE)
+
+trajMM <- trajMM[!grepl("deviations", rownames(trajMM)), ]
+
+p1 <- plotTrajectoryHeatmap(trajMM, 
+                            varCutOff = 0.3,
+                            pal = paletteContinuous(set = "solarExtra"),
+                            limits = c(-2, 2))
+
+p1
+```
+
+
+```{r, fig.height=10, fig.width=6}
+trajGSM <- getTrajectory(ArchRProj = proj,
+                         name = "Fib",
+                         useMatrix = "GeneScoreMatrix",
+                         log2Norm = TRUE)
+
+p2 <- trajectoryHeatmap(trajGSM,
+                        pal = paletteContinuous(set = "horizonExtra"),
+                        limits = c(-2, 2))
+
+p2
+```
+
+
+##
+```{r}
+corGSM_MM <- correlateTrajectories(trajGSM, trajMM,
+                                   varCutOff1 = 0.3,
+                                   varCutOff2 = 0.3,
+                                   corCutOff = 0)
+
+df <- as.data.frame(corGSM_MM[[1]])
+df <- df[!grepl("-AS", df$name1), ]
+df <- df[df$FDR < 0.1, ]
+
+df <- df[!duplicated(df$matchname1), ]
+
+trajGSM2 <- trajGSM[df$name1, ]
+trajMM2 <- trajMM[df$name2, ]
+
+trajCombined <- trajGSM2
+
+assay(trajCombined, withDimnames=FALSE) <- t(apply(assay(trajGSM2), 1, scale)) + 
+    t(apply(assay(trajMM2), 1, scale))
+
+combinedMat <- plotTrajectoryHeatmap(trajCombined,
+                                     returnMat = TRUE,
+                                     varCutOff = 0,
+                                     force = TRUE)
+
+rowOrder <- match(rownames(combinedMat), rownames(trajGSM2))
+
+ht1 <- plotTrajectoryHeatmap(trajGSM2,
+                             pal = paletteContinuous(set = "horizonExtra"),
+                             varCutOff = 0,
+                             rowOrder = rowOrder,
+                             limits = c(-2, 2),
+                             labelRows = TRUE)
+
+ht2 <- plotTrajectoryHeatmap(trajMM2,
+                             pal = paletteContinuous(set = "solarExtra"),
+                             varCutOff = 0,
+                             rowOrder = rowOrder,
+                             limits = c(-2, 2),
+                             labelRows = TRUE)
+
+
+ht1 + ht2
+
+df <- df[rowOrder, ]
+write.table(df, file = "../data/Fibroblast/sel_tf_motif_gex.txt",
+             quote = FALSE, sep = "\t",
+             row.names = FALSE)
+```
+
+
+## plot correlation for each TF
+```{r, fig.width=6, fig.height=4}
+library(ggrepel)
+
+df <- read.table("../data/Fibroblast/sel_tf_motif_gex.txt",
+                 header = TRUE)
+
+p <- ggplot(df, aes(x = reorder(matchname1, -Correlation), 
+                    y = Correlation)) +
+    geom_text_repel(aes(label = matchname2)) +
+    geom_point() +
+    xlab("TFs") + ylab("Correlation") +
+    theme_cowplot() +
+    theme(axis.ticks.x = element_blank(),
+          axis.text.x = element_blank())
+
+p
+```
+
+
+
+## save data
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

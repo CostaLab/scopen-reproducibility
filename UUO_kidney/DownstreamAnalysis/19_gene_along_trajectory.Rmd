@@ -1,0 +1,70 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+## load data
+```{r}
+proj <- loadArchRProject("../data/Fibroblast")
+proj <- addImputeWeights(proj, reducedDims = "harmony")
+```
+
+## plot
+```{r, fig.width=4, fig.height=4}
+for (gene in c("Scara5", "Fbln2", "Dcn", "Fn1", "Col1a1", "Twist2",
+               "Tgfbr1", "Runx1")) {
+    
+    
+        p <- plotEmbedding(
+            ArchRProj = proj,
+            colorBy = "GeneScoreMatrix",
+            name = gene,
+            embedding = "dm",
+            quantCut = c(0.01, 0.99),
+            plotAs = "points",
+            labelAsFactors = FALSE,
+            labelSize = 0,
+            size = 1.5
+        ) + xlab("") + ylab("") +
+            theme_cowplot() +
+            theme(legend.position = "none",
+		 axis.line = element_blank(),
+                  axis.text = element_blank(),
+                  axis.ticks = element_blank()) +
+            ggtitle(gene)
+        
+        print(p)
+}
+
+
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

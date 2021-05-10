@@ -1,0 +1,369 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+
+source("./HiddenUtils.R")
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+# load data
+```{r load_data}
+proj <- loadArchRProject(path = "../data/Fibroblast")
+```
+
+## save peaks
+```{r}
+peaks <- getPeakSet(proj)
+
+rgs <- as.data.frame(peaks@ranges)
+df_peaks <- data.frame(chr = peaks@seqnames,
+                       start = rgs$start,
+                       end = rgs$end)
+write.table(df_peaks, file = "../data/Fibroblast/peaks.bed",
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+```
+
+
+## define function
+```{r define_func}
+library(Rcpp)
+Rcpp::sourceCpp(code='
+  #include <Rcpp.h>
+
+  using namespace Rcpp;
+  using namespace std;
+
+  // Adapted from https://github.com/AEBilgrau/correlateR/blob/master/src/auxiliary_functions.cpp
+  // [[Rcpp::export]]
+  Rcpp::NumericVector rowCorCpp(IntegerVector idxX, IntegerVector idxY, Rcpp::NumericMatrix X, Rcpp::NumericMatrix Y) {
+    
+    if(X.ncol() != Y.ncol()){
+      stop("Columns of Matrix X and Y must be equal length!");
+    }
+
+    if(max(idxX)-1 > X.nrow()){
+      stop("Idx X greater than nrow of Matrix X");
+    }
+
+    if(max(idxY)-1 > Y.nrow()){
+      stop("Idx Y greater than nrow of Matrix Y");
+    }
+
+    // Transpose Matrices
+    X = transpose(X);
+    Y = transpose(Y);
+    
+    const int nx = X.ncol();
+    const int ny = Y.ncol();
+
+    // Centering the matrices
+    for (int j = 0; j < nx; ++j) {
+      X(Rcpp::_, j) = X(Rcpp::_, j) - Rcpp::mean(X(Rcpp::_, j));
+    }
+
+    for (int j = 0; j < ny; ++j) {
+      Y(Rcpp::_, j) = Y(Rcpp::_, j) - Rcpp::mean(Y(Rcpp::_, j));
+    }
+
+    // Compute 1 over the sample standard deviation
+    Rcpp::NumericVector inv_sqrt_ss_X(nx);
+    for (int i = 0; i < nx; ++i) {
+      inv_sqrt_ss_X(i) = 1/sqrt(Rcpp::sum( X(Rcpp::_, i) * X(Rcpp::_, i) ));
+    }
+
+    Rcpp::NumericVector inv_sqrt_ss_Y(ny);
+    for (int i = 0; i < ny; ++i) {
+      inv_sqrt_ss_Y(i) = 1/sqrt(Rcpp::sum( Y(Rcpp::_, i) * Y(Rcpp::_, i) ));
+    }
+
+    //Calculate Correlations
+    const int n = idxX.size();
+    Rcpp::NumericVector cor(n);
+    for(int k = 0; k < n; k++){
+      cor[k] = Rcpp::sum( X(Rcpp::_, idxX[k] - 1) * Y(Rcpp::_, idxY[k] - 1) ) * inv_sqrt_ss_X(idxX[k] - 1) * inv_sqrt_ss_Y(idxY[k] - 1);    } 
+
+    return(cor);
+
+  }'
+)
+
+
+Rcpp::sourceCpp(code='
+  #include <Rcpp.h>
+using namespace Rcpp;
+using namespace std;
+
+// [[Rcpp::export]]
+Rcpp::IntegerVector determineOverlapCpp(IntegerMatrix m, int overlapCut){
+
+  int k2 = 2 * m.ncol();
+  int nr = m.nrow();
+  int nUnion;
+  int maxOverlap;
+  IntegerVector unionVector;
+  IntegerVector testVector = IntegerVector(nr);
+  IntegerVector nOverlap = IntegerVector(nr);
+  NumericVector maxOverlapVector = NumericVector(nr);
+  IntegerVector vi;
+  IntegerVector vj;
+
+  for (int i = 1; i < nr; i++){
+   
+    if (i % 500 == 0) Rcpp::Rcout << "Completed Computing KNN Overlap " << i << " of " << nr << endl;
+    
+    for(int j = 0; j < i; j++){
+      
+      if(testVector(j) == 0){
+        vi = m(i, _);
+        vj = m(j, _);
+        unionVector = union_( vi , vj );
+        nUnion = unionVector.size();
+        nOverlap(j) = k2 - nUnion;
+      }else{
+        nOverlap(j) = 0;
+      }
+    }
+
+    maxOverlap = max( nOverlap );
+    maxOverlapVector(i) = maxOverlap;
+    if(maxOverlap > overlapCut){
+      testVector(i) = -1;
+    }
+
+  }
+
+  return testVector;
+
+}'
+)
+```
+
+## aggregate data along the trajectory
+```{r}
+trajectory <- getCellColData(proj, "Fib")
+trajectory <- trajectory[!is.na(trajectory[, 1]), , drop = FALSE]
+breaks <- seq(0, 100, 1)
+
+groupList <- lapply(seq_along(breaks), function(x) {
+        if (x == 1) {
+            NULL
+        }
+        else {
+            rownames(trajectory)[which(trajectory[, 1] > breaks[x - 
+                1] & trajectory[, 1] <= breaks[x])]
+        }
+    })[-1]
+
+names(groupList) <- paste0("T.", breaks[-length(breaks)], 
+        "_", breaks[-1])
+
+knnObj <- groupList
+```
+
+
+## create knn for data aggregation
+```{r find_knn}
+# knnIteration <- 500
+# k <- 30
+# overlapCutoff <- 0.8
+# 
+# rD <- getReducedDims(ArchRProj = proj, reducedDims = "harmony")
+# 
+# idx <- sample(seq_len(nrow(rD)), knnIteration, replace = !nrow(rD) >= 
+#         knnIteration)
+# 
+# knnObj <- computeKNN(data = rD, query = rD[idx, ], k = k)
+# 
+# keepKnn <- determineOverlapCpp(knnObj, floor(overlapCutoff * 
+#         k))
+# knnObj <- knnObj[keepKnn == 0, ]
+#     
+# knnObj <- lapply(seq_len(nrow(knnObj)), function(x) {
+#         rownames(rD)[knnObj[x, ]]
+#     }) %>% SimpleList
+```
+
+## create aggregated gene matrix
+```{r agg_gex}
+geneMatrix <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+
+geneSet <- geneMatrix@elementMetadata
+
+geneStart <- GRanges(geneSet$seqnames, 
+                   IRanges(geneSet$start, 
+        width = 1), name = geneSet$name, 
+        idx = geneSet$idx)
+
+mat <- geneMatrix@assays@data$GeneScoreMatrix
+
+groupMatRNA <- lapply(seq_along(knnObj), function(x){
+    cellNames <- knnObj[[x]]
+    z <- Matrix::rowSums(mat[, cellNames])
+    z
+}) %>% Reduce(cbind, .)
+
+
+rawMatRNA <- groupMatRNA
+
+groupMatRNA <- t(t(groupMatRNA)/colSums(groupMatRNA)) * 10000
+saveRDS(groupMatRNA, file = "../data/Fibroblast/aggr_rna.rds")
+
+seRNA <- SummarizedExperiment(assays = SimpleList(RNA = groupMatRNA, 
+                                                  RawRNA = rawMatRNA), 
+                              rowRanges = geneStart)
+```
+
+
+## create aggregated atac-seq with raw data
+```{r agg_raw}
+PeakMatrix <- getMatrixFromProject(proj, useMatrix = "PeakMatrix")
+
+peakSet <- getPeakSet(ArchRProj = proj)
+
+mat <- PeakMatrix@assays@data$PeakMatrix
+
+groupMatATAC <- lapply(seq_along(knnObj), function(x){
+    cellNames <- knnObj[[x]]
+    z <- Matrix::rowSums(mat[, cellNames])
+    z
+}) %>% Reduce(cbind, .)
+
+rawMatATAC <- groupMatATAC
+
+groupMatATAC <- t(t(groupMatATAC)/colSums(groupMatATAC)) * 10000
+seATACRaw <- SummarizedExperiment(assays = SimpleList(ATAC = groupMatATAC, 
+                                                      RawATAC = rawMatATAC),
+                                  rowRanges = peakSet)
+
+saveRDS(groupMatATAC, file = "../data/Fibroblast/aggr_raw.rds")
+
+```
+
+## find putative peak-to-gene
+```{r overlap}
+maxDist = 250000
+
+o <- DataFrame(findOverlaps(resize(seRNA, 2 * maxDist + 1, "center"),
+                            resize(rowRanges(seATACRaw), 1, "center"),
+                            ignore.strand = TRUE))
+
+o$distance <- distance(rowRanges(seRNA)[o[, 1]], 
+                       rowRanges(seATACRaw)[o[, 2]])
+colnames(o) <- c("B", "A", "distance")
+
+df <- rowRanges(seATACRaw)[o$A, ]
+
+o$gene <- rowData(seRNA)[o$B, ]$name
+o$peak <- paste0(df@seqnames, "_",
+                 as.data.frame(df@ranges)$start, "_",
+                 as.data.frame(df@ranges)$end)
+```
+
+
+## compute correlation using raw data
+```{r cor_raw}
+o$Correlation <- rowCorCpp(as.integer(o$A), 
+                           as.integer(o$B), 
+                           assay(seATACRaw), assay(seRNA))
+
+o$VarAssayA <- .getQuantiles(matrixStats::rowVars(assay(seATACRaw)))[o$A]
+o$VarAssayB <- .getQuantiles(matrixStats::rowVars(assay(seRNA)))[o$B]
+o$TStat <- (o$Correlation/sqrt((pmax(1 - o$Correlation^2, 
+        1e-17, na.rm = TRUE))/(ncol(seATACRaw) - 2)))
+o$Pval <- 2 * pt(-abs(o$TStat), ncol(seATACRaw) - 2)
+o$FDR <- p.adjust(o$Pval, method = "fdr")
+out <- o[, c("A", "B", "Correlation", "FDR", "VarAssayA", 
+        "VarAssayB", "distance")]
+colnames(out) <- c("idxATAC", "idxRNA", "Correlation", "FDR", 
+        "VarQATAC", "VarQRNA", "Distance")
+
+  out$gene <- o$gene
+  out$peak <- o$peak
+  
+out <- out[!is.na(out$FDR), ]
+
+write.csv(out, file = "../data/Fibroblast/p2g_raw.csv")
+```
+
+## create aggregated atac-seq with imputed data
+```{r agg_imputed}
+for(method in c("scOpen", "MAGIC", "cisTopic", "SCALE")) {
+  mat <- read.table(glue::glue("../../ImputationFibroblast/{method}/{method}.txt"), 
+                    header = TRUE, 
+                    check.names = FALSE, 
+                    sep = "\t", 
+                    comment.char="")
+
+  groupMatATAC <- lapply(seq_along(knnObj), function(x){
+      cellNames <- knnObj[[x]]
+      z <- Matrix::rowSums(mat[, cellNames])
+      z
+  }) %>% Reduce(cbind, .)
+  
+  rawMatATAC <- groupMatATAC
+
+  groupMatATAC <- t(t(groupMatATAC)/colSums(groupMatATAC)) * 10000
+ seATAC <- SummarizedExperiment(assays = SimpleList(ATAC = groupMatATAC, 
+          RawATAC = rawMatATAC), rowRanges = peakSet)
+    
+  saveRDS(groupMatATAC, 
+          file = glue::glue("../data/Fibroblast/aggr_{method}.rds"))
+  
+  o$Correlation <- rowCorCpp(as.integer(o$A), as.integer(o$B), 
+        assay(seATAC), assay(seRNA))
+  o$VarAssayA <- .getQuantiles(matrixStats::rowVars(assay(seATAC)))[o$A]
+  o$VarAssayB <- .getQuantiles(matrixStats::rowVars(assay(seRNA)))[o$B]
+  o$TStat <- (o$Correlation/sqrt((pmax(1 - o$Correlation^2, 
+          1e-17, na.rm = TRUE))/(ncol(seATAC) - 2)))
+  o$Pval <- 2 * pt(-abs(o$TStat), ncol(seATAC) - 2)
+  o$FDR <- p.adjust(o$Pval, method = "fdr")
+  out <- o[, c("A", "B", "Correlation", "FDR", "VarAssayA", 
+          "VarAssayB", "distance")]
+  colnames(out) <- c("idxATAC", "idxRNA", "Correlation", "FDR", 
+          "VarQATAC", "VarQRNA", "Distance")
+
+  out$gene <- o$gene
+  out$peak <- o$peak
+  
+  out <- out[!is.na(out$FDR), ]
+ 
+  write.csv(out, file = glue::glue("../data/Fibroblast/p2g_{method}.csv"))
+}
+
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```

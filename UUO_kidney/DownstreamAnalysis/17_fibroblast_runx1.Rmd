@@ -1,0 +1,200 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+
+source("HiddenUtils.R")
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+
+```{r load_data}
+proj <- loadArchRProject(path = "../data/Fibroblast")
+
+geneMatrix <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+peakMatrix <- getMatrixFromProject(proj, useMatrix = "PeakMatrix")
+
+peaks <- as.data.frame(peakMatrix@rowRanges)
+peaks$peaks <- paste0(peaks$seqnames, ":", peaks$start, "_", peaks$end)
+```
+
+
+## loadd p2g links
+```{r load_p2g}
+df_p2g_raw <- read.csv("../data/Fibroblast/p2g_raw.csv", row.names = 1)
+df_p2g_scopen <- read.csv("../data/Fibroblast/p2g_scOpen.csv", row.names = 1)
+df_p2g_magic <- read.csv("../data/Fibroblast/p2g_MAGIC.csv", row.names = 1)
+df_p2g_cisTopic <- read.csv("../data/Fibroblast/p2g_cisTopic.csv", row.names = 1)
+df_p2g_SCALE <- read.csv("../data/Fibroblast/p2g_SCALE.csv", row.names = 1)
+
+df_p2g_raw <- subset(df_p2g_raw, Distance > 0)
+df_p2g_scopen <- subset(df_p2g_scopen, Distance > 0)
+df_p2g_magic <- subset(df_p2g_magic, Distance > 0)
+df_p2g_cisTopic <- subset(df_p2g_cisTopic, Distance > 0)
+df_p2g_SCALE <- subset(df_p2g_SCALE, Distance > 0)
+```
+
+
+## get Runx1 binding sites
+```{r}
+Runx1BindingSites <- read.table("../../HINT/FootprintingFibroblast/RUNX1.bed")
+gr <- GRanges(seqnames = Runx1BindingSites$V1, 
+              IRanges(start = as.numeric(Runx1BindingSites$V2),
+                      end = as.numeric(Runx1BindingSites$V3)))
+
+
+df_p2g_raw$peak_chr <- stringr::str_split_fixed(df_p2g_raw$peak, "_", 3)[, 1]
+df_p2g_raw$peak_start <- stringr::str_split_fixed(df_p2g_raw$peak, "_", 3)[, 2]
+df_p2g_raw$peak_end <- stringr::str_split_fixed(df_p2g_raw$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = df_p2g_raw$peak_chr,
+                         IRanges(start = as.numeric(df_p2g_raw$peak_start),
+                                 end = as.numeric(df_p2g_raw$peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+```
+
+
+```{r}
+Runx1_2_g_raw <- df_p2g_raw[as.integer(o@from), ]
+Runx1_2_g_scopen <- df_p2g_scopen[as.integer(o@from), ]
+Runx1_2_g_magic <- df_p2g_magic[as.integer(o@from), ]
+Runx1_2_g_cisTopic <- df_p2g_cisTopic[as.integer(o@from), ]
+Runx1_2_g_SCALE <- df_p2g_SCALE[as.integer(o@from), ]
+
+
+Runx1_2_g_raw$gene <- toupper(Runx1_2_g_raw$gene)
+Runx1_2_g_scopen$gene <- toupper(Runx1_2_g_scopen$gene)
+Runx1_2_g_magic$gene <- toupper(Runx1_2_g_magic$gene)
+Runx1_2_g_cisTopic$gene <- toupper(Runx1_2_g_cisTopic$gene)
+Runx1_2_g_SCALE$gene <- toupper(Runx1_2_g_SCALE$gene)
+```
+
+
+## correlation to FC
+```{r, fig.height=12, fig.width=12}
+library(DESeq2)
+library(ggrepel)
+
+load("../../../RUNX1_RNA/results/star_salmon/deseq2_qc/deseq2.dds.RData")
+de_res <- results(dds) %>%
+  as.data.frame() %>%
+  subset(., !is.na(log2FoldChange) &!is.na(padj))
+
+de_res$gene <- rownames(de_res)
+
+df_raw <- merge.data.frame(de_res, Runx1_2_g_raw)
+df_scopen <- merge.data.frame(de_res, Runx1_2_g_scopen)
+df_magic <- merge.data.frame(de_res, Runx1_2_g_magic)
+df_cisTopic <- merge.data.frame(de_res, Runx1_2_g_cisTopic)
+df_SCALE <- merge.data.frame(de_res, Runx1_2_g_SCALE)
+
+cor_raw <- cor(df_raw$log2FoldChange, df_raw$Correlation)
+cor_scopen <- cor(df_scopen$log2FoldChange, df_scopen$Correlation)
+cor_magic <- cor(df_magic$log2FoldChange, df_magic$Correlation)
+cor_cisTopic <- cor(df_cisTopic$log2FoldChange, df_cisTopic$Correlation)
+cor_SCALE <- cor(df_SCALE$log2FoldChange, df_SCALE$Correlation)
+
+
+horizontal.lins <- c(-0.4, 0.4)
+vertical.lins <- c(-2.5, 2.5)
+
+df_text <- subset(df_raw, abs(log2FoldChange) > 2.5 & 
+                      abs(Correlation) > 0.4)
+
+
+p1 <- ggplot(data = df_raw, aes(x = log2FoldChange, y = Correlation)) +
+  geom_point() + ggtitle("Raw") +
+    geom_text_repel(data = df_text, aes(x = log2FoldChange, y = Correlation,
+                                        label = gene)) +
+    theme_cowplot() +
+    geom_hline(yintercept = horizontal.lins) +
+    geom_vline(xintercept = vertical.lins)
+
+
+df_text <- subset(df_scopen, abs(log2FoldChange) > 2.5 & 
+                      abs(Correlation) > 0.4)
+
+p2 <- ggplot(data = df_scopen, aes(x = log2FoldChange, y = Correlation)) +
+  geom_point() + ggtitle("scOpen")+
+        geom_text_repel(data = df_text, aes(x = log2FoldChange, y = Correlation,
+                                        label = gene)) +
+    theme_cowplot() +
+    geom_hline(yintercept = horizontal.lins) +
+    geom_vline(xintercept = vertical.lins)
+
+
+df_text <- subset(df_magic, abs(log2FoldChange) > 2.5 & 
+                      abs(Correlation) > 0.4)
+p3 <- ggplot(data = df_magic, aes(x = log2FoldChange, y = Correlation)) +
+  geom_point() + ggtitle("MAGIC") +
+        geom_text_repel(data = df_text, aes(x = log2FoldChange, y = Correlation,
+                                        label = gene)) +
+    theme_cowplot() +
+    geom_hline(yintercept = horizontal.lins) +
+    geom_vline(xintercept = vertical.lins)
+
+
+df_text <- subset(df_cisTopic, abs(log2FoldChange) > 2.5 & 
+                      abs(Correlation) > 0.4)
+p4 <- ggplot(data = df_cisTopic, aes(x = log2FoldChange,
+                                     y = Correlation)) +
+    geom_point() + ggtitle("cisTopic") +
+        geom_text_repel(data = df_text, aes(x = log2FoldChange, y = Correlation,
+                                        label = gene)) +
+    theme_cowplot() +
+    geom_hline(yintercept = horizontal.lins) +
+    geom_vline(xintercept = vertical.lins)
+
+
+df_text <- subset(df_SCALE, abs(log2FoldChange) > 2.5 & 
+                      abs(Correlation) > 0.4)
+p5 <- ggplot(data = df_SCALE, aes(x = log2FoldChange,
+                                  y = Correlation)) +
+  geom_point() + ggtitle("SCALE") +
+        geom_text_repel(data = df_text, aes(x = log2FoldChange, y = Correlation,
+                                        label = gene)) +
+    theme_cowplot() +
+    geom_hline(yintercept = horizontal.lins) +
+    geom_vline(xintercept = vertical.lins)
+
+
+p1
+p2
+p3
+p4
+p5
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```

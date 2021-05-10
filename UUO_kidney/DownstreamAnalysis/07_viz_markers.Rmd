@@ -1,0 +1,64 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+```
+
+
+## Viz markers
+```{r, fig.width=20, fig.height=4}
+library(factoextra)
+library(cluster)
+
+
+
+for (dr_method in c("LSI", "cisTopic", "scOpen", "snapATAC")) {
+    uuo.atac <- readRDS(sprintf("../data/uuo.integrated.%s.Rds",
+                                dr_method))
+    
+    DefaultAssay(uuo.atac) <- "RNA"
+    
+    plot_list <- lapply(c("Scara5", "Fbln2", "Dcn", "Fn1", "Col1a1"), function(x){
+        p <- FeaturePlot(uuo.atac, features = x, 
+                     reduction = "umap_harmony",
+                     pt.size = 0.1,
+                     min.cutoff = "q1",
+                     max.cutoff = "q99") +
+            xlab("") + ylab("") +
+         ggtitle(sprintf("%s", x)) +
+         NoLegend() +
+            theme(axis.text = element_blank(),
+                  axis.ticks = element_blank())
+        
+        p
+    })
+    
+    ArchR::ggAlignPlots(plotList = plot_list, type = "h")
+}
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

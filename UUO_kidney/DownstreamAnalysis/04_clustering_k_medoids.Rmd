@@ -1,0 +1,189 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+```
+
+## Load data
+```{r load_data}
+cols.celltypes <- c("Pod" = "#2e3091", 
+                "EC" = "#45c0ba",
+                "PT(S1)" = "#8ec73e",
+                "PT(S2)" = "#0eaf4f",
+                "PT(S3)" = "#3ab44a",
+                "Dediff. PT" = "#007d3b",
+                "Prolif. PT" = "#00491b",
+                "DL and tAL" = "#e0e332",
+                "TAL" = "#cba214",
+                "DCT" = "#F79123",
+                "CNT" = "#f26221",
+                "CD-PC" = "#f05325",
+                "IC" = "#8f0b13",
+                "Fib.1" = "#ed98b0",
+                "Fib.2" = "#ca4d9c",
+                "JGA" = "#d776ab",
+                "Ma" = "#00ff00")
+```
+
+
+## Clustering with K-medoids
+```{r, fig.width=12, fig.height=5}
+library(parallel)
+library(doParallel)
+library(foreach)
+
+cl <- parallel::makeForkCluster(5)
+doParallel::registerDoParallel(cl)
+
+foreach(dr_method = c("LSI", "cisTopic", "scOpen", "snapATAC")) %dopar% {
+    uuo.atac <- readRDS(sprintf("../data/uuo.integrated.%s.Rds",
+                                dr_method))
+    
+    # here we use 1 - cor as distance metric
+    df.dist <- 1 - cor(as.matrix(t(uuo.atac@reductions$harmony@cell.embeddings)))
+
+    pa <- pam(df.dist, k = 17, diss = TRUE, cluster.only = TRUE)
+    df_cluster <- as.data.frame(pa)
+    colnames(df_cluster) <- c("pam_clusters")
+    uuo.atac <- AddMetaData(uuo.atac, metadata = df_cluster)
+
+    p1 <- DimPlot(uuo.atac, reduction = "umap_harmony",
+              label = TRUE, label.size = 4,
+              group.by = "pam_clusters")
+
+    p2 <-DimPlot(uuo.atac, group.by = "predicted.id", 
+             reduction = "umap_harmony",
+             label = TRUE, pt.size = 0.1, label.size = 4,
+             cols = cols.celltypes) +
+    xlab("UMAP1") + ylab("UMAP2") +
+        ggtitle(sprintf("predicted labels: %s", dr_method))
+    
+    ggAlignPlots(p1, p2, type = "h")
+
+    saveRDS(uuo.atac, file = sprintf("../data/uuo.integrated.%s.Rds", dr_method))
+}
+
+parallel::stopCluster(cl)
+```
+
+
+## visualize
+```{r, fig.height=6, fig.width=8}
+for(dr_method in c("LSI", "cisTopic", "scOpen", "snapATAC")) {
+    uuo.atac <- readRDS(sprintf("../data/uuo.integrated.%s.Rds",
+                                dr_method))
+    
+    p1 <- DimPlot(uuo.atac, reduction = "umap_harmony",
+              label = TRUE, label.size = 4,
+              group.by = "pam_clusters")
+
+    print(p1)
+}
+```
+
+
+## ARI
+```{r}
+cols <- c("scOpen" = "#e31a1c",
+          "cisTopic" = "#33a02c",
+          "SnapATAC" = "#386cb0",
+          "Cusanovich2018" = "#984ea3")
+
+df_list <- list()
+idx <- 1
+
+for (dr_method in c("LSI", "cisTopic", "scOpen", "snapATAC")) {
+    uuo.atac <- readRDS(sprintf("../data/uuo.integrated.%s.Rds",
+                                dr_method))
+    meta.data <- as.data.frame(uuo.atac@meta.data)
+    meta.data$sample2 <- stringr::str_replace_all(meta.data$sample,
+                                                  c("D0_1" = "Day 0",
+                                                    "D0_2" = "Day 0",
+                                                    "D2_1" = "Day 2",
+                                                    "D2_2" = "Day 2",
+                                                    "D10_1" = "Day 10",
+                                                    "D10_2" = "Day 10"))
+    
+    
+    ARI <- adjustedRandIndex(meta.data$pam_clusters,
+                             meta.data$predicted.id)
+    
+    df_list[[idx]] <- data.frame(ARI = ARI,
+                                 dr_method = dr_method,
+                                 data = "Integrated")
+    idx <- idx + 1
+    for (sample in c("Day 0", "Day 2", "Day 10")) {
+        meta.data.sub <- meta.data[meta.data$sample2 == sample, ]
+        ARI <- adjustedRandIndex(meta.data.sub$pam_clusters,
+                                 meta.data.sub$predicted.id)
+        df_list[[idx]] <- data.frame(ARI=ARI,
+                                        dr_method=dr_method,
+                                        data = sample)
+        idx <- idx + 1
+    }
+    
+}
+
+df <- Reduce(rbind, df_list)
+df$dr_method <- stringr::str_replace_all(df$dr_method, c("LSI" = "Cusanovich2018",
+                                                         "snapATAC" = "SnapATAC"))
+
+p <- df %>%
+    ggplot(aes(x = data, y = ARI)) + 
+    geom_bar(aes(fill = dr_method), position = "dodge", stat = "identity") +
+    scale_fill_manual(values = cols) +
+    xlab("") + ylab("ARI") +
+    theme_cowplot() +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 60, hjust = 1))
+
+p
+```
+
+## Ranking
+```{r, fig.height=4, fig.width=3}
+df <- group_by(df, data) %>%
+    mutate(rank = rank(ARI))
+
+
+p <- ggplot(data = df, aes(x = reorder(dr_method, -rank, FUN = median), 
+                               y = rank, fill = dr_method)) +
+        geom_boxplot() +
+    scale_fill_manual(values = cols) +
+        xlab("") + ylab("") +
+        theme_cowplot() +
+        theme(legend.title = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.text.x = element_text(angle = 60, hjust = 1),
+              legend.position = "none")
+
+p
+```
+
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

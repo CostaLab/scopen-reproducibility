@@ -1,0 +1,78 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+```
+
+## Load data
+```{r load_data}
+counts <- readRDS("../../ArchR/PeakMatrix.Rds")
+
+metadata <- read.csv(
+  file = "../../ArchR/meta_data.csv",
+  header = TRUE,
+  row.names = 1)
+
+chrom_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c("_", "_"),
+  genome = 'mm10'
+)
+
+obj <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata,
+  names.field = 1, 
+  names.delim = "#")
+
+obj$nFrags_log10 <- log10(obj$nFrags)
+
+obj$sample <- Idents(obj)
+```
+
+
+## Computing QC Metrics
+```{r qc, fig.height=4, fig.width=12}
+VlnPlot(
+  object = obj,
+  features = c('TSSEnrichment', 'nFrags_log10',
+               'FRIP', 'DoubletScore'),
+  pt.size = 0,
+  ncol = 4
+)
+```
+
+
+
+## save data
+```{r}
+saveRDS(obj, "../data/uuo.Rds")
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

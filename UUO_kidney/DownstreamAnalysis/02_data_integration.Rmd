@@ -1,0 +1,311 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(harmony)
+```
+
+## Load data
+```{r load_data}
+cols.samples <- c("D0_1" = "#a6cee3",
+                  "D0_2" = "#1f78b4",
+                  "D2_1" = "#b2df8a",
+                  "D2_2" = "#33a02c",
+                  "D10_1" = "#fb9a99",
+                  "D10_2" = "#e31a1c")
+```
+
+
+## dimension reduction LSI and batch correction with Harmony
+```{r LSI, fig.height=4, fig.width=10}
+obj <- readRDS("../data/uuo.Rds")
+obj$sample <- Idents(obj)
+
+obj <- obj %>%
+    RunTFIDF() %>%
+    FindTopFeatures(min.cutoff = 'q0') %>%
+    RunSVD()
+
+DepthCor(obj, n = 30)
+
+obj <- RunHarmony(
+  object = obj,
+  group.by.vars = 'sample',
+  reduction = 'lsi',
+  project.dim = FALSE,
+  assay.use = 'peaks',
+  plot_convergence = FALSE,
+  verbose = TRUE
+)
+
+obj <- RunUMAP(object = obj, reduction = 'lsi', dims = 2:30,
+               metric = "correlation",
+               umap.method = "umap-learn")
+obj <- RunUMAP(obj, 
+               dims = 2:30, 
+               reduction = 'harmony',
+               reduction.name = "umap_harmony",
+               metric = "correlation",
+               umap.method = "umap-learn")
+
+p1 <- DimPlot(object = obj, reduction = "umap",
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p2 <- DimPlot(object = obj, reduction = "umap_harmony", 
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p3 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "nFrags_log10") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p4 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "DoubletScore") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+ggAlignPlots(p1, p2, type = "h")
+ggAlignPlots(p3, p4, type = "h")
+
+saveRDS(obj, "../data/uuo.integrated.LSI.Rds")
+```
+
+
+## dimension reduction cisTopic and batch correction with Harmony
+```{r cisTopic, fig.height=4, fig.width=10}
+obj <- readRDS("../data/uuo.Rds")
+obj$sample <- Idents(obj)
+
+df <- read.table("../../DimReduction/cisTopic/cisTopic.txt",
+                 header = TRUE, check.names = FALSE, sep = "\t",
+                 comment.char="")
+
+df <- df[, colnames(obj)]
+rownames(df) <- paste0("PC_", seq_len(nrow(df)))
+
+n.features <- nrow(df)
+
+
+obj[['cisTopic']] <- CreateDimReducObject(embeddings = as.matrix(t(df)),
+                                        key = "PC_", 
+                                        assay = "peaks")
+
+DepthCor(obj, assay = "peaks", 
+         reduction = "cisTopic", n = n.features)
+
+obj <- RunHarmony(
+  object = obj,
+  group.by.vars = 'sample',
+  reduction = 'cisTopic',
+  project.dim = FALSE,
+  assay.use = 'peaks',
+  plot_convergence = FALSE,
+  verbose = TRUE
+)
+
+obj <- RunUMAP(object = obj, reduction = 'cisTopic', 
+               dims = 1:n.features,
+               metric = "correlation",
+               umap.method = "umap-learn")
+obj <- RunUMAP(obj, 
+               dims = 1:n.features, 
+               reduction = 'harmony',
+               reduction.name = "umap_harmony",
+               metric = "correlation",
+               umap.method = "umap-learn")
+
+p1 <- DimPlot(object = obj, reduction = "umap",
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p2 <- DimPlot(object = obj, reduction = "umap_harmony", 
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p3 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "nFrags_log10") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p4 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "DoubletScore") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+ggAlignPlots(p1, p2, type = "h")
+ggAlignPlots(p3, p4, type = "h")
+
+
+saveRDS(obj, "../data/uuo.integrated.cisTopic.Rds")
+```
+
+
+## dimension reduction scOpen and batch correction with Harmony
+```{r scOpen, fig.height=4, fig.width=10}
+obj <- readRDS("../data/uuo.Rds")
+obj$sample <- Idents(obj)
+
+df <- read.table("../../DimReduction/scOpen/scOpen_barcodes.txt",
+                 header = TRUE, check.names = FALSE, sep = "\t",
+                 comment.char="")
+
+df <- df[, colnames(obj)]
+rownames(df) <- paste0("PC_", seq_len(nrow(df)))
+
+n.features <- nrow(df)
+
+
+obj[['scOpen']] <- CreateDimReducObject(embeddings = as.matrix(t(df)),
+                                        key = "PC_", 
+                                        assay = "peaks")
+
+DepthCor(obj, assay = "peaks", 
+         reduction = "scOpen", n = n.features)
+
+obj <- RunHarmony(
+  object = obj,
+  group.by.vars = 'sample',
+  reduction = 'scOpen',
+  project.dim = FALSE,
+  assay.use = 'peaks',
+  plot_convergence = FALSE,
+  verbose = TRUE
+)
+
+obj <- RunUMAP(object = obj, reduction = 'scOpen', 
+               dims = 1:n.features,
+               metric = "correlation",
+               umap.method = "umap-learn")
+obj <- RunUMAP(obj, 
+               dims = 1:n.features, 
+               reduction = 'harmony',
+               reduction.name = "umap_harmony",
+               metric = "correlation",
+               umap.method = "umap-learn")
+
+p1 <- DimPlot(object = obj, reduction = "umap",
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p2 <- DimPlot(object = obj, reduction = "umap_harmony", 
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p3 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "nFrags_log10") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p4 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "DoubletScore") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+ggAlignPlots(p1, p2, type = "h")
+ggAlignPlots(p3, p4, type = "h")
+
+
+saveRDS(obj, "../data/uuo.integrated.scOpen.Rds")
+```
+
+
+
+
+## dimension reduction snapATAC and batch correction with Harmony
+```{r snapATAC, fig.height=4, fig.width=10}
+library(SnapATAC)
+
+obj <- readRDS("../data/uuo.Rds")
+obj$sample <- Idents(obj)
+
+x.sp <- readRDS("../../DimReduction/SnapATAC/x.sp.Rds")
+df <- as.data.frame(x.sp@smat@dmat)
+rownames(df) <- paste0(x.sp@sample, "#", x.sp@barcode)
+
+df <- df[colnames(obj) ,]
+colnames(df) <- paste0("PC_", seq_len(ncol(df)))
+
+n.features <- ncol(df)
+
+obj[['snapATAC']] <- CreateDimReducObject(embeddings = as.matrix(df),
+                                        key = "PC_", 
+                                        assay = "peaks")
+
+DepthCor(obj, assay = "peaks", 
+         reduction = "snapATAC", n = n.features)
+
+obj <- RunHarmony(
+  object = obj,
+  group.by.vars = 'sample',
+  reduction = 'snapATAC',
+  project.dim = FALSE,
+  assay.use = 'peaks',
+  plot_convergence = FALSE,
+  verbose = TRUE
+)
+
+obj <- RunUMAP(object = obj, reduction = 'snapATAC', 
+               dims = 1:n.features,
+               metric = "correlation",
+               umap.method = "umap-learn")
+obj <- RunUMAP(obj, 
+               dims = 1:n.features, 
+               reduction = 'harmony',
+               reduction.name = "umap_harmony",
+               metric = "correlation",
+               umap.method = "umap-learn")
+
+p1 <- DimPlot(object = obj, reduction = "umap",
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p2 <- DimPlot(object = obj, reduction = "umap_harmony", 
+              group.by = "sample") +
+    scale_color_manual(values = cols.samples) +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p3 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "nFrags_log10") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+p4 <- FeaturePlot(object = obj, reduction = "umap_harmony", 
+              feature = "DoubletScore") +
+    xlab("UMAP1") + ylab("UMAP2")
+
+ggAlignPlots(p1, p2, type = "h")
+ggAlignPlots(p3, p4, type = "h")
+
+
+saveRDS(obj, "../data/uuo.integrated.snapATAC.Rds")
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

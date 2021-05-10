@@ -1,0 +1,785 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+
+source("HiddenUtils.R")
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+
+```{r load_data}
+proj <- loadArchRProject(path = "../data/Fibroblast")
+
+geneMatrix <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+peakMatrix <- getMatrixFromProject(proj, useMatrix = "PeakMatrix")
+```
+
+## find marker peaks
+```{r}
+# markersPeaks <- getMarkerFeatures(
+#     ArchRProj = proj, 
+#     useMatrix = "PeakMatrix", 
+#     groupBy = "CellType",
+#   bias = c("TSSEnrichment", "log10(nFrags)"),
+#   testMethod = "wilcoxon"
+# )
+# 
+# heatmapPeaks <- plotMarkerHeatmap(
+#   seMarker = markersPeaks, 
+#   cutOff = "FDR <= 0.05 & Log2FC >= 0.5")
+# 
+# draw(heatmapPeaks, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+# 
+# markerList <- getMarkers(markersPeaks, 
+#                          cutOff = "FDR <= 0.05 & Log2FC >= 0.5", returnGR = TRUE)
+# markerList$Myofibroblast
+# 
+# peaks_Myofibroblast <- as.data.frame(markerList$Myofibroblast)
+# 
+# peaks_Myofibroblast$peaks <- paste0(peaks_Myofibroblast$seqnames, "_",
+#                                     peaks_Myofibroblast$start, "_",
+#                                     peaks_Myofibroblast$end)
+
+```
+
+## loadd p2g links
+```{r load_p2g}
+df_p2g_raw <- read.csv("../data/Fibroblast/p2g_raw.csv", row.names = 1)
+df_p2g_scopen <- read.csv("../data/Fibroblast/p2g_scOpen.csv", row.names = 1)
+df_p2g_magic <- read.csv("../data/Fibroblast/p2g_MAGIC.csv", row.names = 1)
+df_p2g_cisTopic <- read.csv("../data/Fibroblast/p2g_cisTopic.csv", row.names = 1)
+df_p2g_SCALE <- read.csv("../data/Fibroblast/p2g_SCALE.csv", row.names = 1)
+
+df_p2g_raw <- subset(df_p2g_raw, Distance > 0)
+df_p2g_scopen <- subset(df_p2g_scopen, Distance > 0)
+df_p2g_magic <- subset(df_p2g_magic, Distance > 0)
+df_p2g_cisTopic <- subset(df_p2g_cisTopic, Distance > 0)
+df_p2g_SCALE <- subset(df_p2g_SCALE, Distance > 0)
+
+df_p2g_raw$data <- "Raw"
+df_p2g_scopen$data <- "scOpen"
+df_p2g_magic$data <- "MAGIC"
+df_p2g_cisTopic$data <- "cisTopic"
+df_p2g_SCALE$data <- "SCALE"
+
+df <- rbind(df_p2g_raw, df_p2g_scopen, df_p2g_magic,
+            df_p2g_cisTopic, df_p2g_SCALE)
+
+p1 <- ggplot(data = df, aes(x = data, y = Correlation)) +
+  geom_boxplot()
+
+p2 <- ggplot(data = df, aes(x = data, y = Correlation)) +
+  geom_violin()
+
+p1
+p2
+```
+
+
+## get Runx1 binding sites
+```{r}
+Runx1BindingSites <- read.table("../../HINT/FootprintingFibroblast/RUNX1.bed")
+gr <- GRanges(seqnames = Runx1BindingSites$V1,
+              IRanges(start = as.numeric(Runx1BindingSites$V2),
+                      end = as.numeric(Runx1BindingSites$V3)))
+```
+
+
+## define function
+```{r}
+get_trajectory <- function(proj, mat){
+    trajectory <- getCellColData(proj, "Fib")
+    trajectory <- trajectory[!is.na(trajectory[, 1]), , drop = FALSE]
+    breaks <- seq(0, 100, 1)
+
+groupList <- lapply(seq_along(breaks), function(x) {
+        if (x == 1) {
+            NULL
+        }
+        else {
+            rownames(trajectory)[which(trajectory[, 1] > breaks[x - 
+                1] & trajectory[, 1] <= breaks[x])]
+        }
+    })[-1]
+
+names(groupList) <- paste0("T.", breaks[-length(breaks)], 
+        "_", breaks[-1])
+
+    groupMat <- lapply(seq_along(groupList), function(x){
+        cellNames <- groupList[[x]]
+        z <- Matrix::rowSums(mat[, cellNames])
+        z
+    }) %>% Reduce(cbind, .)
+    
+    groupMat <- t(t(groupMat)/colSums(groupMat)) * 10000
+    
+    
+    message("Smoothing...")
+    smoothGroupMat <- as.matrix(t(apply(groupMat, 1, function(x) centerRollMean(x, k = 3))))
+    colnames(smoothGroupMat) <- paste0(colnames(groupMat))
+        colnames(groupMat) <- paste0(colnames(groupMat))
+        seTrajectory <- SummarizedExperiment(assays = SimpleList(smoothMat = as.matrix(smoothGroupMat), 
+            mat = as.matrix(groupMat)), rowData = NULL)
+    rownames(seTrajectory) <- rownames(mat)
+
+    metadata(seTrajectory)$Params <- list(useMatrix = "peaks", 
+        matrixClass = "Sparse.Integer.Matrix", scaleTo = 10000, log2Norm = TRUE, 
+        smoothWindow = 11, date = Sys.Date())
+        
+    seTrajectory
+}
+
+```
+
+
+
+## heatmap of all peaks and genes
+```{r}
+peaks <- as.data.frame(peakMatrix@rowRanges)
+mat <- peakMatrix@assays@data$PeakMatrix
+rownames(mat) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+trajPM  <- get_trajectory(proj, mat)
+
+p <- plotTrajectoryHeatmap(trajPM, 
+                             pal = paletteContinuous(set = "solarExtra"))
+ 
+p
+
+trajGSM  <- getTrajectory(proj, name = "Fib",
+                          useMatrix = "GeneScoreMatrix",
+                          smoothWindow = 11)
+
+rownames(trajGSM) <- stringr::str_split_fixed(rownames(trajGSM), ":", 2)[, 2]
+rownames(trajGSM) <- toupper(rownames(trajGSM))
+
+p <- plotTrajectoryHeatmap(trajGSM, 
+                             pal = paletteContinuous(set = "solarExtra"))
+ 
+p
+
+print(nrow(trajPM))
+print(nrow(trajGSM))
+
+
+geneSet <- geneMatrix@elementMetadata
+
+groupMatRNA <- readRDS(file = "../data/Fibroblast/aggr_rna.rds")
+rownames(groupMatRNA) <- toupper(geneSet$name)
+```
+
+## add peak-to-gene links using raw count matrix
+```{r raw, fig.height=10, fig.width=14}
+df_p2g_raw <- subset(df_p2g_raw, FDR < 0.05)
+
+df_p2g_raw$peak_chr <- stringr::str_split_fixed(df_p2g_raw$peak, "_", 3)[, 1]
+df_p2g_raw$peak_start <- stringr::str_split_fixed(df_p2g_raw$peak, "_", 3)[, 2]
+df_p2g_raw$peak_end <- stringr::str_split_fixed(df_p2g_raw$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = df_p2g_raw$peak_chr,
+                         IRanges(start = as.numeric(df_p2g_raw$peak_start),
+                                 end = as.numeric(df_p2g_raw$peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+Runx1_2_g_raw <- df_p2g_raw[as.integer(o@from), ]
+
+peaks <- as.data.frame(peakMatrix@rowRanges)
+groupMatATAC <- readRDS(file = "../data/Fibroblast/aggr_raw.rds")
+rownames(groupMatATAC) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+Runx1_2_g_raw$gene <- toupper(Runx1_2_g_raw$gene)
+
+dir.out <- "../data/Fibroblast/Raw"
+
+if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+}
+
+for (i in 1:nrow(Runx1_2_g_raw)) {
+    gene <- Runx1_2_g_raw$gene[[i]]
+    peak <- Runx1_2_g_raw$peak[[i]]
+    
+    correlation <- Runx1_2_g_raw$Correlation[[i]]
+    
+    rna <- groupMatRNA[gene, ]
+    atac <- groupMatATAC[peak, ]
+    
+    df <- data.frame(rna = rna,
+                     atac = atac)
+    df$PseudoTime <- 1:nrow(df)
+    
+    pal <- rev(ArchR::paletteContinuous(set = "blueYellow"))
+    
+    p <- ggplot(data = df, aes(x = rna, y = atac, 
+                               color = PseudoTime)) +
+        geom_point() +
+        scale_color_gradientn(colours = pal) +
+        xlab("RNA") + ylab("ATAC") +
+        ggtitle(glue::glue("Cor: {correlation}")) +
+        theme_cowplot()
+    
+    peak <- stringr::str_replace_all(peak, ":", "_")
+    
+    pdf(file = glue::glue("{dir.out}/{gene}_{peak}.pdf"),
+        width = 5, height = 4)
+    print(p)
+    dev.off()
+}
+
+trajGSM_sub <- trajGSM[Runx1_2_g_raw$gene, ]
+trajPM_sub <- trajPM[Runx1_2_g_raw$peak, ]
+
+print(nrow(trajPM_sub))
+print(nrow(trajGSM_sub))
+
+
+ht1 <- plotTrajectoryHeatmap(trajPM_sub, 
+                           varCutOff = 0,
+                            pal = paletteContinuous(set = "solarExtra"))
+
+
+ht2 <- plotTrajectoryHeatmap(trajGSM_sub, 
+                           varCutOff = 0,
+                            pal = paletteContinuous(set = "horizonExtra"))
+
+
+
+ht1 + ht2
+  
+
+write.csv(Runx1_2_g_raw, 
+          file = "../data/Fibroblast/runx1_target_genes_raw.csv")
+```
+
+## add peak-to-gene links using scopen matrix
+```{r scopen, fig.height=10, fig.width=14}
+df_p2g_scopen <- subset(df_p2g_scopen, FDR < 0.05)
+
+df_p2g_scopen$peak_chr <- stringr::str_split_fixed(df_p2g_scopen$peak, "_", 3)[, 1]
+df_p2g_scopen$peak_start <- stringr::str_split_fixed(df_p2g_scopen$peak, "_", 3)[, 2]
+df_p2g_scopen$peak_end <- stringr::str_split_fixed(df_p2g_scopen$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = df_p2g_scopen$peak_chr,
+                         IRanges(start = as.numeric(df_p2g_scopen$peak_start),
+                                 end = as.numeric(df_p2g_scopen$peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+Runx1_2_g_scopen <- df_p2g_scopen[as.integer(o@from), ]
+
+peaks <- as.data.frame(peakMatrix@rowRanges)
+groupMatATAC <- readRDS(file = "../data/Fibroblast/aggr_scOpen.rds")
+rownames(groupMatATAC) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+Runx1_2_g_scopen$gene <- toupper(Runx1_2_g_scopen$gene)
+
+dir.out <- "../data/Fibroblast/scOpen"
+
+if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+}
+
+
+for (i in 1:nrow(Runx1_2_g_scopen)) {
+    gene <- Runx1_2_g_scopen$gene[[i]]
+    peak <- Runx1_2_g_scopen$peak[[i]]
+    
+    correlation <- Runx1_2_g_scopen$Correlation[[i]]
+    
+    rna <- groupMatRNA[gene, ]
+    atac <- groupMatATAC[peak, ]
+    
+    df <- data.frame(rna = rna,
+                     atac = atac)
+    df$PseudoTime <- 1:nrow(df)
+    
+    pal <- ArchR::paletteContinuous(set = "blueYellow")
+    
+    p <- ggplot(data = df, aes(x = rna, y = atac, 
+                               color = PseudoTime)) +
+        geom_point() +
+        scale_color_gradientn(colours = pal) +
+        xlab("RNA") + ylab("ATAC") +
+        ggtitle(glue::glue("Cor: {correlation}")) +
+        theme_cowplot()
+    
+    peak <- stringr::str_replace_all(peak, ":", "_")
+    
+    pdf(file = glue::glue("{dir.out}/{gene}_{peak}.pdf"),
+        width = 5, height = 4)
+    print(p)
+    dev.off()
+}
+
+mat <- read.table(glue::glue("../../ImputationFibroblast/scOpen/scOpen.txt"),
+                   header = TRUE, check.names = FALSE, sep = "\t",
+                 comment.char="")
+
+rownames(mat) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+trajPM  <- get_trajectory(proj, mat)
+trajPM_sub <- trajPM[Runx1_2_g_scopen$peak, ]
+trajGSM_sub <- trajGSM[Runx1_2_g_scopen$gene, ]
+
+print(nrow(trajPM_sub))
+print(nrow(trajGSM_sub))
+
+ht1 <- plotTrajectoryHeatmap(trajPM_sub,
+                           varCutOff = 0,
+                           limits = c(-2, 2),
+                            pal = paletteContinuous(set = "solarExtra"))
+
+
+
+ht2 <- plotTrajectoryHeatmap(trajGSM_sub,
+                           varCutOff = 0,
+                            pal = paletteContinuous(set = "horizonExtra"))
+
+
+ht1 + ht2
+
+write.csv(Runx1_2_g_scopen, file = "../data/Fibroblast/runx1_target_genes_scopen.csv")
+```
+
+## add peak-to-gene links using magic matrix
+```{r magic, fig.height=10, fig.width=14}
+df_p2g_magic <- subset(df_p2g_magic, FDR < 0.05)
+
+df_p2g_magic$peak_chr <- stringr::str_split_fixed(df_p2g_magic$peak, "_", 3)[, 1]
+df_p2g_magic$peak_start <- stringr::str_split_fixed(df_p2g_magic$peak, "_", 3)[, 2]
+df_p2g_magic$peak_end <- stringr::str_split_fixed(df_p2g_magic$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = df_p2g_magic$peak_chr,
+                         IRanges(start = as.numeric(df_p2g_magic$peak_start),
+                                 end = as.numeric(df_p2g_magic$peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+Runx1_2_g_magic <- df_p2g_magic[as.integer(o@from), ]
+
+peaks <- as.data.frame(peakMatrix@rowRanges)
+groupMatATAC <- readRDS(file = "../data/Fibroblast/aggr_MAGIC.rds")
+rownames(groupMatATAC) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+Runx1_2_g_magic$gene <- toupper(Runx1_2_g_magic$gene)
+
+dir.out <- "../data/Fibroblast/MAGIC"
+
+if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+}
+
+
+for (i in 1:nrow(Runx1_2_g_magic)) {
+    gene <- Runx1_2_g_magic$gene[[i]]
+    peak <- Runx1_2_g_magic$peak[[i]]
+    
+    correlation <- Runx1_2_g_magic$Correlation[[i]]
+    
+    rna <- groupMatRNA[gene, ]
+    atac <- groupMatATAC[peak, ]
+    
+    df <- data.frame(rna = rna,
+                     atac = atac)
+    df$PseudoTime <- 1:nrow(df)
+    
+    pal <- ArchR::paletteContinuous(set = "blueYellow")
+    
+    p <- ggplot(data = df, aes(x = rna, y = atac, 
+                               color = PseudoTime)) +
+        geom_point() +
+        scale_color_gradientn(colours = pal) +
+        xlab("RNA") + ylab("ATAC") +
+        ggtitle(glue::glue("Cor: {correlation}")) +
+        theme_cowplot()
+    
+    peak <- stringr::str_replace_all(peak, ":", "_")
+    
+    pdf(file = glue::glue("{dir.out}/{gene}_{peak}.pdf"),
+        width = 5, height = 4)
+    print(p)
+    dev.off()
+}
+
+mat <- read.table(glue::glue("../../ImputationFibroblast/MAGIC/MAGIC.txt"), 
+                    header = TRUE, check.names = FALSE, sep = "\t",
+                    comment.char="")
+rownames(mat) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+ 
+
+trajPM  <- get_trajectory(proj, mat)
+trajPM_sub <- trajPM[Runx1_2_g_magic$peak, ]
+trajGSM_sub <- trajGSM[Runx1_2_g_magic$gene, ]
+
+print(nrow(trajPM_sub))
+print(nrow(trajGSM_sub))
+
+ht1 <- plotTrajectoryHeatmap(trajPM_sub,
+                           varCutOff = 0,
+                           limits = c(-2, 2),
+                            pal = paletteContinuous(set = "solarExtra"))
+
+
+
+ht2 <- plotTrajectoryHeatmap(trajGSM_sub,
+                           varCutOff = 0,
+                            pal = paletteContinuous(set = "horizonExtra"))
+
+
+ht1 + ht2
+
+write.csv(Runx1_2_g_magic, file = "../data/Fibroblast/runx1_target_genes_MAGIC.csv")
+```
+
+## add peak-to-gene links using cisTopic matrix
+```{r cisTopic, fig.height=10, fig.width=14}
+df_p2g_cisTopic <- subset(df_p2g_cisTopic, FDR < 0.05)
+
+df_p2g_cisTopic$peak_chr <- stringr::str_split_fixed(df_p2g_cisTopic$peak, "_", 3)[, 1]
+df_p2g_cisTopic$peak_start <- stringr::str_split_fixed(df_p2g_cisTopic$peak, "_", 3)[, 2]
+df_p2g_cisTopic$peak_end <- stringr::str_split_fixed(df_p2g_cisTopic$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = df_p2g_cisTopic$peak_chr,
+                         IRanges(start = as.numeric(df_p2g_cisTopic$peak_start),
+                                 end = as.numeric(df_p2g_cisTopic$peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+Runx1_2_g_cisTopic <- df_p2g_cisTopic[as.integer(o@from), ]
+
+peaks <- as.data.frame(peakMatrix@rowRanges)
+groupMatATAC <- readRDS(file = "../data/Fibroblast/aggr_cisTopic.rds")
+rownames(groupMatATAC) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+Runx1_2_g_cisTopic$gene <- toupper(Runx1_2_g_cisTopic$gene)
+
+dir.out <- "../data/Fibroblast/cisTopic"
+
+if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+}
+
+
+for (i in 1:nrow(Runx1_2_g_cisTopic)) {
+    gene <- Runx1_2_g_cisTopic$gene[[i]]
+    peak <- Runx1_2_g_cisTopic$peak[[i]]
+    
+    correlation <- Runx1_2_g_cisTopic$Correlation[[i]]
+    
+    rna <- groupMatRNA[gene, ]
+    atac <- groupMatATAC[peak, ]
+    
+    df <- data.frame(rna = rna,
+                     atac = atac)
+    df$PseudoTime <- 1:nrow(df)
+    
+    pal <- ArchR::paletteContinuous(set = "blueYellow")
+    
+    p <- ggplot(data = df, aes(x = rna, y = atac, 
+                               color = PseudoTime)) +
+        geom_point() +
+        scale_color_gradientn(colours = pal) +
+        xlab("RNA") + ylab("ATAC") +
+        ggtitle(glue::glue("Cor: {correlation}")) +
+        theme_cowplot()
+    
+    peak <- stringr::str_replace_all(peak, ":", "_")
+    
+    pdf(file = glue::glue("{dir.out}/{gene}_{peak}.pdf"),
+        width = 5, height = 4)
+    print(p)
+    dev.off()
+}
+
+
+
+mat <- read.table(glue::glue("../../ImputationFibroblast/cisTopic/cisTopic.txt"),
+                   header = TRUE, check.names = FALSE, sep = "\t",
+                 comment.char="")
+rownames(mat) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+trajPM  <- get_trajectory(proj, mat)
+trajPM_sub <- trajPM[Runx1_2_g_cisTopic$peak, ]
+trajGSM_sub <- trajGSM[Runx1_2_g_cisTopic$gene, ]
+
+print(nrow(trajPM_sub))
+print(nrow(trajGSM_sub))
+
+ht1 <- plotTrajectoryHeatmap(trajPM_sub,
+                           varCutOff = 0,
+                           limits = c(-2, 2),
+                            pal = paletteContinuous(set = "solarExtra"))
+
+
+
+ht2 <- plotTrajectoryHeatmap(trajGSM_sub,
+                           varCutOff = 0,
+                            pal = paletteContinuous(set = "horizonExtra"))
+
+
+ht1 + ht2
+
+write.csv(Runx1_2_g_cisTopic, file = "../data/Fibroblast/runx1_target_genes_cisTopic.csv")
+```
+
+## add peak-to-gene links using SCALE matrix
+```{r SCALE, fig.height=10, fig.width=14}
+df_p2g_SCALE <- subset(df_p2g_SCALE, FDR < 0.05)
+
+df_p2g_SCALE$peak_chr <- stringr::str_split_fixed(df_p2g_SCALE$peak, "_", 3)[, 1]
+df_p2g_SCALE$peak_start <- stringr::str_split_fixed(df_p2g_SCALE$peak, "_", 3)[, 2]
+df_p2g_SCALE$peak_end <- stringr::str_split_fixed(df_p2g_SCALE$peak, "_", 3)[, 3]
+peaks <- GRanges(seqnames = df_p2g_SCALE$peak_chr,
+                         IRanges(start = as.numeric(df_p2g_SCALE$peak_start),
+                                 end = as.numeric(df_p2g_SCALE$peak_end)))
+o <- findOverlaps(query = peaks, subject = gr,
+                          ignore.strand = TRUE)
+Runx1_2_g_SCALE <- df_p2g_SCALE[as.integer(o@from), ]
+
+peaks <- as.data.frame(peakMatrix@rowRanges)
+groupMatATAC <- readRDS(file = "../data/Fibroblast/aggr_SCALE.rds")
+rownames(groupMatATAC) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+Runx1_2_g_SCALE$gene <- toupper(Runx1_2_g_SCALE$gene)
+
+dir.out <- "../data/Fibroblast/SCALE"
+
+if(!dir.exists(dir.out)){
+    dir.create(dir.out)
+}
+
+
+for (i in 1:nrow(Runx1_2_g_SCALE)) {
+    gene <- Runx1_2_g_SCALE$gene[[i]]
+    peak <- Runx1_2_g_SCALE$peak[[i]]
+    
+    correlation <- Runx1_2_g_SCALE$Correlation[[i]]
+    
+    rna <- groupMatRNA[gene, ]
+    atac <- groupMatATAC[peak, ]
+    
+    df <- data.frame(rna = rna,
+                     atac = atac)
+    df$PseudoTime <- 1:nrow(df)
+    
+    pal <- ArchR::paletteContinuous(set = "blueYellow")
+    
+    p <- ggplot(data = df, aes(x = rna, y = atac, 
+                               color = PseudoTime)) +
+        geom_point() +
+        scale_color_gradientn(colours = pal) +
+        xlab("RNA") + ylab("ATAC") +
+        ggtitle(glue::glue("Cor: {correlation}")) +
+        theme_cowplot()
+    
+    peak <- stringr::str_replace_all(peak, ":", "_")
+    
+    pdf(file = glue::glue("{dir.out}/{gene}_{peak}.pdf"),
+        width = 5, height = 4)
+    print(p)
+    dev.off()
+}
+
+
+mat <- read.table(glue::glue("../../ImputationFibroblast/SCALE/SCALE.txt"),
+                   header = TRUE, check.names = FALSE, sep = "\t", 
+                  comment.char="")
+rownames(mat) <- paste0(peaks$seqnames, "_", 
+                                 peaks$start, "_", 
+                                 peaks$end)
+
+trajPM  <- get_trajectory(proj, mat)
+trajPM_sub <- trajPM[Runx1_2_g_SCALE$peak, ]
+trajGSM_sub <- trajGSM[Runx1_2_g_SCALE$gene, ]
+
+print(nrow(trajPM_sub))
+print(nrow(trajGSM_sub))
+
+ht1 <- plotTrajectoryHeatmap(trajPM_sub,
+                           varCutOff = 0,
+                           limits = c(-2, 2),
+                            pal = paletteContinuous(set = "solarExtra"))
+
+
+
+ht2 <- plotTrajectoryHeatmap(trajGSM_sub,
+                           varCutOff = 0,
+                            pal = paletteContinuous(set = "horizonExtra"))
+
+
+ht1 + ht2
+
+write.csv(Runx1_2_g_SCALE, file = "../data/Fibroblast/runx1_target_genes_SCALE.csv")
+```
+
+
+## correlation to FC
+```{r}
+# library(DESeq2)
+# 
+# load("../../../RUNX1_RNA/results/star_salmon/deseq2_qc/deseq2.dds.RData")
+# de_res <- results(dds) %>%
+#   as.data.frame() %>%
+#   subset(., !is.na(log2FoldChange))
+# 
+# de_res$gene <- rownames(de_res)
+# 
+# df_raw <- merge.data.frame(de_res, Runx1_2_g_raw)
+# df_scopen <- merge.data.frame(de_res, Runx1_2_g_scopen)
+# df_magic <- merge.data.frame(de_res, Runx1_2_g_magic)
+# df_cisTopic <- merge.data.frame(de_res, Runx1_2_g_cisTopic)
+# df_SCALE <- merge.data.frame(de_res, Runx1_2_g_SCALE)
+# 
+# cor_raw <- cor(df_raw$log2FoldChange, df_raw$Correlation)
+# cor_scopen <- cor(df_scopen$log2FoldChange, df_scopen$Correlation)
+# cor_magic <- cor(df_magic$log2FoldChange, df_magic$Correlation)
+# cor_cisTopic <- cor(df_cisTopic$log2FoldChange, df_cisTopic$Correlation)
+# cor_SCALE <- cor(df_SCALE$log2FoldChange, df_SCALE$Correlation)
+# 
+# 
+# p1 <- ggplot(data = df_raw, aes(x = log2FoldChange, y = Correlation)) +
+#   geom_point() + ggtitle("Raw") +
+#     theme_cowplot() +
+#     geom_hline(yintercept = 0.4) +
+#     geom_hline(yintercept = -0.4) +
+#     geom_vline(xintercept = 5) +
+#     geom_vline(xintercept = -5)
+# 
+# 
+# p2 <- ggplot(data = df_scopen, aes(x = log2FoldChange, y = Correlation)) +
+#   geom_point() + ggtitle("scOpen")+
+#     theme_cowplot() +
+#     geom_hline(yintercept = 0.4) +
+#     geom_hline(yintercept = -0.4) +
+#     geom_vline(xintercept = 5) +
+#     geom_vline(xintercept = -5)
+# 
+# p3 <- ggplot(data = df_magic, aes(x = log2FoldChange, y = Correlation)) +
+#   geom_point() + ggtitle("MAGIC") +
+#     theme_cowplot() +
+#     geom_hline(yintercept = 0.4) +
+#     geom_hline(yintercept = -0.4) +
+#     geom_vline(xintercept = 5) +
+#     geom_vline(xintercept = -5)
+# 
+# 
+# p4 <- ggplot(data = df_cisTopic, aes(x = log2FoldChange, 
+#                                      y = Correlation)) + 
+#     geom_point() + ggtitle("cisTopic") +
+#     theme_cowplot() +
+#     geom_hline(yintercept = 0.4) +
+#     geom_hline(yintercept = -0.4) +
+#     geom_vline(xintercept = 5) +
+#     geom_vline(xintercept = -5)
+# 
+# p5 <- ggplot(data = df_SCALE, aes(x = log2FoldChange, 
+#                                   y = Correlation)) +
+#   geom_point() + ggtitle("SCALE") +
+#     theme_cowplot() +
+#     geom_hline(yintercept = 0.4) +
+#     geom_hline(yintercept = -0.4) +
+#     geom_vline(xintercept = 5) +
+#     geom_vline(xintercept = -5)
+# 
+# 
+# p1
+# p2
+# p3
+# p4
+# p5
+# 
+# df.plot <- data.frame(Correlation = c(cor_raw,
+#                                             cor_scopen,
+#                                             cor_magic,
+#                                             cor_cisTopic,
+#                                             cor_SCALE),
+#                       Method = c("Raw", "scOpen", "MAGIC", "cisTopic", "SCALE"))
+# 
+# p <- ggplot(data = df.plot, aes(x = Method, y = Correlation)) +
+#   geom_bar(stat = "identity")
+# 
+# p
+```
+
+
+
+## overlapping of target genes
+```{r}
+# library("readxl")
+# 
+# up_res <- read_excel("../../../RUNX1_RNA/data/DEGenes.xlsx", sheet = "Runx1")
+# down_res <- read_excel("../../../RUNX1_RNA/data/DEGenes.xlsx", sheet = "Control")
+# 
+# up_res$condition <- "Runx1"
+# down_res$condition <- "Control"
+# df_genes <- rbind(up_res, down_res)
+# 
+# Runx1_2_g_raw$gene <- toupper(Runx1_2_g_raw$gene)
+# Runx1_2_g_scopen$gene <- toupper(Runx1_2_g_scopen$gene)
+# #Runx1_2_g_magic$gene <- toupper(Runx1_2_g_magic$gene)
+# #Runx1_2_g_cisTopic$gene <- toupper(Runx1_2_g_cisTopic$gene)
+# #Runx1_2_g_SCALE$gene <- toupper(Runx1_2_g_SCALE$gene)
+# 
+# overlapping <- intersect(df_genes$gene, Runx1_2_g_raw$gene)
+# df_genes <- subset(df_genes, gene %in% overlapping)
+# 
+# overlapping <- intersect(df_genes$gene, Runx1_2_g_scopen$gene)
+# 
+# ## compute
+# Runx1_2_g_raw <- subset(Runx1_2_g_raw, gene %in% overlapping)
+# Runx1_2_g_scopen <- subset(Runx1_2_g_scopen, gene %in% overlapping)
+# 
+# df <- merge.data.frame(Runx1_2_g_raw, df_genes)
+# 
+# fg <- df[df$condition == "Runx1", ]
+# bg <- df[df$condition == "Control", ]
+# 
+# pr <- pr.curve(scores.class0 = fg$Correlation, scores.class1 = bg$Correlation, curve = T)
+# plot(pr)
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```

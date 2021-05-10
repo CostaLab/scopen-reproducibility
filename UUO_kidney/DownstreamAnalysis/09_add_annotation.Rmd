@@ -1,0 +1,177 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+```{r set_parameters, echo=FALSE}
+## set parameters
+set.seed(42)
+addArchRThreads(threads = 100)
+addArchRGenome("mm10")
+```
+
+
+```{r}
+uuo.atac <- readRDS("../data/uuo.integrated.scOpen.Rds")
+Idents(uuo.atac) <- "pam_clusters"
+```
+
+
+## qc per cluster
+```{r qc_cluster, fig.width=8, fig.height=6}
+p1 <- VlnPlot(uuo.atac, features = "TSSEnrichment", pt.size = 0) +
+    NoLegend()
+    
+p2 <- VlnPlot(uuo.atac, features = "nFrags_log10", pt.size = 0) +
+    NoLegend()
+
+p3 <- VlnPlot(uuo.atac, features = "DoubletEnrichment", pt.size = 0) +
+    NoLegend()
+
+p1
+p2
+p3
+
+df <- as.data.frame(uuo.atac@meta.data)
+
+p <- ggplot(data = df, aes(x = DoubletEnrichment)) +
+    geom_histogram(bins = 100) +
+    geom_vline(xintercept = 2.5, color = "red")
+
+#p <- hist(uuo.atac$DoubletEnrichment, breaks = 200)
+
+print(p)
+```
+
+
+## subset
+```{r subset}
+uuo.atac <- subset(uuo.atac, idents = '4', invert = TRUE)
+
+# remove cells with high doublet score
+uuo.atac <- subset(uuo.atac, DoubletEnrichment < 2.5)
+```
+
+## add new umap after cell filtering
+```{r}
+uuo.atac <- RunUMAP(uuo.atac, 
+               dims = 1:20, 
+               reduction = 'harmony',
+               reduction.name = "umap_harmony_v2",
+               metric = "correlation",
+               umap.method = "umap-learn")
+
+
+
+```
+
+
+
+## add annotation
+```{r add_annotation, fig.height=6, fig.width=6}
+newLabels <- c("1" = "PT(S2)",
+               "2" = "TAL",
+               "3" = "PT(S3)",
+               "5" = "DCT",
+               "6" = "PT(S1)",
+               "7" = "CD-PC",
+               "8" = "EC",
+               "9" = "CNT",
+               "10" = "IC",
+               "11" = "Fibroblast",
+               "12" = "DL & TAL",
+               "13" = "Mac",
+               "14" = "Injured PT",
+               "15" = "Lymphoid",
+               "16" = "Pod",
+               "17" = "TAL")
+
+uuo.atac <- RenameIdents(uuo.atac, newLabels)
+
+uuo.atac$CellType <- as.character(Idents(uuo.atac))
+
+pal <- ArchR::paletteDiscrete(values = uuo.atac$CellType)
+
+
+p1 <- DimPlot(uuo.atac, reduction = "umap_harmony_v2",
+              label = TRUE,
+              group.by = "CellType", pt.size = 0.1) +
+    xlab("UMAP 1") + ylab("UMAP 2") +
+    scale_color_manual(values = pal) +
+    theme(axis.ticks = element_blank(),
+          axis.text = element_blank()) +
+    ggtitle("")
+
+
+print(p1)
+```
+
+
+## heatmap
+```{r heatmap, fig.height=6, fig.width=12}
+known.markers <- c("Aqp2", "Aqp4", # CD-PC,
+                   "Scnn1g", # CNT
+                   "Slc12a3", # DCT
+                   "Flt1", "Erg", # EC
+                   "Pdgfrb", "Col3a1",  # Fibroblast
+                   "Tmem117", # IC
+                   "Vcam1", "Havcr1", # Injured PT
+                   "Slc14a2", # DL & TAL
+                   "Cd3d", "Lta", "Ltb", # Lymphoid
+                   "C1qa", "C1qb", # Mac
+                   "Wt1", "Nphs1", "Nphs2", # Pod
+                   "Slc5a2", # PT (S1)
+                   "Slc17a3", # PT (S2)
+                   "Slc27a2", # PT (S3),
+                   "Slc12a1", "Umod" # TAL
+                   )
+
+uuo.atac <- uuo.atac %>%
+    ScaleData(features = known.markers)
+
+
+DoHeatmap(uuo.atac, 
+          features = known.markers,
+          group.by = "CellType",
+          disp.min = -1,
+          disp.max = 1.5,
+          group.colors = pal,
+          size = 4)
+
+```
+
+## save data
+```{r}
+df <- uuo.atac@meta.data
+write.csv(df, file = "../data/uuo.integrated.annotated.scOpen.csv")
+saveRDS(uuo.atac, "../data/uuo.integrated.annotated.scOpen.Rds")
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```

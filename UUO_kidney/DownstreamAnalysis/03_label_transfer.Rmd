@@ -1,0 +1,123 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(GenomeInfoDb)
+library(EnsDb.Mmusculus.v79)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+```
+
+## Load data
+```{r load_data}
+cols.samples <- c("D0_1" = "#a6cee3",
+                  "D0_2" = "#1f78b4",
+                  "D2_1" = "#b2df8a",
+                  "D2_2" = "#33a02c",
+                  "D10_1" = "#fb9a99",
+                  "D10_2" = "#e31a1c")
+
+cols.celltypes <- c("Pod" = "#2e3091", 
+                "EC" = "#45c0ba",
+                "PT(S1)" = "#8ec73e",
+                "PT(S2)" = "#0eaf4f",
+                "PT(S3)" = "#3ab44a",
+                "Dediff. PT" = "#007d3b",
+                "Prolif. PT" = "#00491b",
+                "DL and tAL" = "#e0e332",
+                "TAL" = "#cba214",
+                "DCT" = "#F79123",
+                "CNT" = "#f26221",
+                "CD-PC" = "#f05325",
+                "IC" = "#8f0b13",
+                "Fib.1" = "#ed98b0",
+                "Fib.2" = "#ca4d9c",
+                "JGA" = "#d776ab",
+                "Ma" = "#00ff00")
+```
+
+## Load snRNA-seq
+```{r load_rna}
+gene.expression <- read.csv(file = "../../scRNA_UUO/GSE119531_UUO.dge.txt",
+                            header = TRUE, row.names = 1, sep="\t")
+
+metadata <- read.csv(file = "../../scRNA_UUO/GSE119531_UUO.cell.annotation.txt", 
+                     header = TRUE, row.names = 1,sep="\t")
+uuo.rna <- CreateSeuratObject(counts = gene.expression, 
+                              assay = 'gene.expression',
+                              project = 'UUO', min.cells = 1, 
+                              names.field = 2,
+                              names.delim = "_")
+uuo.rna$CellType <- metadata$CellType
+uuo.rna <- NormalizeData(uuo.rna) %>%
+    FindVariableFeatures() %>%
+    ScaleData() %>%
+    RunPCA()
+
+```
+
+
+## Label transfer
+```{r, fig.height=6, fig.width=8}
+gene.activity <- readRDS("../../ArchR/GeneScoreMatrix.Rds")
+
+for (dr_method in c("LSI", "cisTopic", "scOpen", "snapATAC")) {
+    uuo.atac <- readRDS(sprintf("../data/uuo.integrated.%s.Rds",
+                                dr_method))
+    
+    uuo.atac[["RNA"]] <- CreateAssayObject(counts = gene.activity)
+    DefaultAssay(uuo.atac) <- 'RNA'
+    uuo.atac <- NormalizeData(object = uuo.atac)
+
+    transfer.anchors <- FindTransferAnchors(reference = uuo.rna, 
+                                        query = uuo.atac,
+                                        features = VariableFeatures(uuo.rna),
+                                        reference.assay = "gene.expression",
+                                        query.assay = "RNA", 
+                                        reduction = "cca")
+    
+    predicted.labels <- TransferData(anchorset = transfer.anchors,
+                                     refdata = uuo.rna$CellType,
+                                     weight.reduction = uuo.atac[["harmony"]],
+                                     dims = 1:ncol(uuo.atac[["harmony"]]))
+    
+    uuo.atac <- AddMetaData(object = uuo.atac, 
+                            metadata = predicted.labels)
+
+    
+    p1 <-DimPlot(uuo.atac, group.by = "predicted.id", 
+             reduction = "umap_harmony",
+             label = TRUE, pt.size = 0.1, label.size = 4,
+             cols = cols.celltypes) +
+    xlab("UMAP1") + ylab("UMAP2") +
+        ggtitle(sprintf("predicted labels: %s", dr_method))
+
+    print(p1)
+    
+    saveRDS(uuo.atac, file = sprintf("../data/uuo.integrated.%s.Rds", dr_method))
+}
+
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```

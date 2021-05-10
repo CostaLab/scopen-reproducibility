@@ -1,0 +1,226 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(cowplot)
+library(ArchR)
+library(Gviz)
+library(cicero)
+library(rtracklayer)
+library(stringr)
+library(GenomicRanges)
+library(genomation)
+```
+
+## load reference genome
+```{r}
+gene_model <- readGFF("../../../Reference/refdata-cellranger-atac-mm10-1.2.0/genes/genes.gtf")
+gene_model$chromosome <- gene_model$seqid
+gene_model$gene <- gene_model$gene_id
+gene_model$transcript <- gene_model$transcript_id
+gene_model$symbol <- gene_model$gene_name
+gene_model$exon <- gene_model$exon_id
+gene_model$width <- gene_model$end - gene_model$start + 1
+gene_model$feature <- gene_model$transcript_type
+gene_model <- subset(gene_model, !is.na(transcript) & !is.na(exon))
+```
+
+
+## load data
+```{r}
+df_links <- read.csv("../data/Fibroblast/p2g_scOpen.csv", row.names = 1)
+df_links <- subset(df_links, Distance > 0 & FDR < 0.05 & Correlation > 0)
+
+## load gene information
+proj <- loadArchRProject("../data/Fibroblast")
+geneMatrix <- getMatrixFromProject(proj, useMatrix = "GeneScoreMatrix")
+df_gene <- as.data.frame(rowData(geneMatrix))
+
+df_gene$gene_pos <- paste(df_gene$seqnames, 
+                        df_gene$start, 
+                        df_gene$start + 1,
+                        sep = "_")
+
+df_gene <- subset(df_gene, select = c("name", "gene_pos")) 
+colnames(df_gene) <- c("gene", "gene_pos")
+
+df <- merge.data.frame(df_links, df_gene)
+```
+
+
+
+## load bigwig files
+```{r}
+data_track_ylim <- c(0, 4)
+
+dt_t1 <- DataTrack(range = "../../PseudoBulkTrajectory/BigWig/T1.bw", 
+                   genome = "mm10", type = "h", name = "T1", col = "#F8FA0D",
+                   ylim = data_track_ylim)
+
+dt_t2 <- DataTrack(range = "../../PseudoBulkTrajectory/BigWig/T2.bw", 
+                   genome = "mm10", type = "h", name = "T2", col = "#F8BA43",
+                   ylim = data_track_ylim)
+
+dt_t3 <- DataTrack(range = "../../PseudoBulkTrajectory/BigWig/T3.bw", 
+                   genome = "mm10", type = "h", name = "T3", col = "#2DB7A3",
+                   ylim = data_track_ylim)
+
+dt_t4 <- DataTrack(range = "../../PseudoBulkTrajectory/BigWig/T4.bw", 
+                   genome = "mm10", type = "h", name = "T4", col = "#0262E0",
+                   ylim = data_track_ylim)
+
+dt_t5 <- DataTrack(range = "../../PseudoBulkTrajectory/BigWig/T5.bw", 
+                   genome = "mm10", type = "h", name = "T5", col = "#352A86",
+                   ylim = data_track_ylim)
+
+df_tf <- read.table("../../HINT/FootprintingFibroblast/RUNX1.bed",
+                    header = FALSE)
+
+colnames(df_tf) <- c("chromosome", "start", "end", "name", "score", "strand")
+
+gr_tf <- GRanges(seqnames = df_tf$chromosome,
+                     ranges = IRanges(start = df_tf$start,
+                                      end = df_tf$end))
+```
+
+## plot 
+```{r, fig.height=6, fig.width=6}
+# , "Twist2", "Col15a1"
+for (sel_gene in c("Tgfbr1", "Twist2")) {
+    message(sprintf("plotting links for gene %s", sel_gene))
+    
+    df.plot <- subset(df, gene == sel_gene)
+    
+    peak_chr <- stringr::str_split_fixed(df.plot$peak, "_", 3)[, 1]
+    peak_start <- stringr::str_split_fixed(df.plot$peak, "_", 3)[, 2]
+    peak_end <- stringr::str_split_fixed(df.plot$peak, "_", 3)[, 3]
+    
+    ## highlight runx1 binding sites
+    gr_peaks <- GRanges(seqnames = peak_chr,
+                     ranges = IRanges(start = as.numeric(peak_start),
+                                      end = as.numeric(peak_end)))
+    gr_overlap <- findOverlaps(query = gr_tf, 
+                               subject = gr_peaks, 
+                                type = "any",
+                               ignore.strand = TRUE)
+    df_tf_sub <- df_tf[gr_overlap@from, ]
+    gr_tf_sub <- gr_tf[gr_overlap@from, ]
+    
+    print(df_tf_sub)
+    
+    df_tf_sub$symbol <- ""
+
+    runx1_track <- GeneRegionTrack(range = df_tf_sub,
+                            genome = "mm10",
+                            name = "Runx1",
+                            shape = "box",
+                            col = "blue",
+                            fill = "blue",
+                            fontsize = 12,
+                            fontcolor = "black")
+        
+    gr_view <- resize(gr_tf_sub, width = 2000, fix = "center")
+
+    peak_center <- (as.numeric(peak_start) + as.numeric(peak_end)) / 2
+    
+    df.plot$peak_pos <- paste(peak_chr, 
+                            peak_center, 
+                            peak_center + 1,
+                            sep = "_")
+    
+    df.plot <- subset(df.plot, 
+                      select = c("peak_pos", "gene_pos", "FDR"))
+    colnames(df.plot) <- c("Peak1", "Peak2", "coaccess")
+    df.plot$coaccess <- -log10(df.plot$coaccess)
+    
+    coaccess_cutoff <- 3
+    
+    peaks <- as.data.frame(str_split_fixed(df.plot$Peak2, "_", 3))
+    
+    chr <- unique(peak_chr)
+    if(sel_gene == "Col15a1"){
+        minbp <- min(as.numeric(as.character(peaks$V2))) - 2000
+    } else{
+        minbp <- min(as.numeric(df_tf_sub$start)) - 10000
+        maxbp <- max(as.numeric(df_tf_sub$end)) + 10000        
+    }
+    
+    connection_ymax <- max(df.plot$coaccess)
+    
+    link_tracks <- plot_connections(connection_df = df.plot, 
+                                    gene_model = gene_model,
+                                    gene_model_shape = "smallArrow",
+                                    collapseTranscripts = "longest",
+                                    chr = chr, 
+                     minbp = minbp, 
+                     maxbp = maxbp,
+                     alpha_by_coaccess = FALSE,
+                     connection_ymax = connection_ymax,
+                     coaccess_cutoff = coaccess_cutoff,
+                     connection_width = 1,
+                     comparison_connection_color = "#9A6324",
+                     include_axis_track = FALSE,
+                     return_as_list = TRUE)
+
+    link_track <- link_tracks[[1]]
+    peak_track <- link_tracks[[2]]
+    gene_model_track <- link_tracks[[3]]
+    gene_axis_track <- GenomeAxisTrack(fontsize = 4)
+
+    link_track@dp@pars$fontsize <- 12
+    dt_t1@dp@pars$fontsize <- 12
+    dt_t2@dp@pars$fontsize <- 12
+    dt_t3@dp@pars$fontsize <- 12
+    dt_t4@dp@pars$fontsize <- 12
+    dt_t5@dp@pars$fontsize <- 12
+    gene_model_track@dp@pars$fontsize <- 12
+
+    trackList <- list(link_track,
+                      peak_track,
+                      dt_t1,
+                      dt_t2,
+                      dt_t3,
+                      dt_t4,
+                      dt_t5,
+                      gene_model_track,
+                      runx1_track)
+    
+    trackList <- HighlightTrack(trackList = trackList, 
+                                range = gr_view,
+                                chromosome = chr,
+                                col = "#F0544F", 
+                                fill = "white",
+                                #fill = "#EFD8D7", 
+                                inBackground = FALSE, 
+                                alpha = 0.3)
+
+#grid.newpage()
+
+plotTracks(trackList, title.width = 0.5, showTitle = TRUE, 
+               from = minbp, to = maxbp, chromosome = chr, 
+               sizes = c(0.2, 0.05, 
+                         0.1, 0.1, 0.1, 0.1, 0.1, 
+                         0.1, 0.05), 
+               transcriptAnnotation = "symbol", 
+               background.title = "white", 
+               col.border.title = "transparent", 
+               lwd.border.title = "transparent", 
+               col.axis = "black", fontcolor.legend = "black",
+               innerMargin = 3)
+}
+```
+
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

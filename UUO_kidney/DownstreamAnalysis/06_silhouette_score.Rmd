@@ -1,0 +1,164 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+```
+
+## Load data
+```{r load_data}
+cols.celltypes <- c("Pod" = "#2e3091", 
+                "EC" = "#45c0ba",
+                "PT(S1)" = "#8ec73e",
+                "PT(S2)" = "#0eaf4f",
+                "PT(S3)" = "#3ab44a",
+                "Dediff. PT" = "#007d3b",
+                "Prolif. PT" = "#00491b",
+                "DL and tAL" = "#e0e332",
+                "TAL" = "#cba214",
+                "DCT" = "#F79123",
+                "CNT" = "#f26221",
+                "CD-PC" = "#f05325",
+                "IC" = "#8f0b13",
+                "Fib.1" = "#ed98b0",
+                "Fib.2" = "#ca4d9c",
+                "JGA" = "#d776ab",
+                "Ma" = "#00ff00")
+
+
+cols <- c("scOpen" = "#e31a1c",
+          "cisTopic" = "#33a02c",
+          "SnapATAC" = "#386cb0",
+          "Cusanovich2018" = "#984ea3")
+```
+
+
+## Compute silhouette score
+```{r, fig.width=12, fig.height=5}
+for (dr_method in c("LSI", "cisTopic", "scOpen", "snapATAC")) {
+    uuo.atac <- readRDS(sprintf("../data/uuo.integrated.%s.Rds",
+                                dr_method))
+    
+    df.dist <- 1 - cor(as.matrix(t(uuo.atac@reductions$harmony@cell.embeddings)))
+    meta.data <- uuo.atac@meta.data
+    
+    meta.data$sample2 <- stringr::str_replace_all(meta.data$sample,
+                                                  c("D0_1" = "Day_0",
+                                                    "D0_2" = "Day_0",
+                                                    "D2_1" = "Day_2",
+                                                    "D2_2" = "Day_2",
+                                                    "D10_1" = "Day_10",
+                                                    "D10_2" = "Day_10"))
+    
+    si <- silhouette(x = as.numeric(factor(meta.data$predicted.id)), 
+                     dmatrix = df.dist)
+    
+    saveRDS(si, file = sprintf("../data/si.%s.Rds",
+                                dr_method))
+    
+    for (sample in c("Day_0", "Day_2", "Day_10")) {
+        meta.data.sub <- meta.data[meta.data$sample2 == sample, ]
+        cell.embedding <- uuo.atac@reductions$harmony@cell.embeddings[rownames(meta.data.sub), ]
+        
+        df.dist <- 1 - cor(t(cell.embedding))
+
+        si <- silhouette(x = as.numeric(factor(meta.data.sub$predicted.id)), 
+                     dmatrix = df.dist)
+        
+        saveRDS(si, file = sprintf("../data/si.%s.%s.Rds",
+                                dr_method, sample))
+
+    }
+}
+```
+
+## plot
+```{r}
+df_list <- list()
+idx <- 1
+
+for (dr_method in c("LSI", "cisTopic", "scOpen", "snapATAC")) {
+    obj <- readRDS(sprintf("../data/si.%s.Rds", dr_method))
+    si <- mean(obj[, 'sil_width'])
+    
+    df_list[[idx]] <- data.frame(si = si,
+                                 dr_method = dr_method,
+                                 data = "Integrated")
+    idx <- idx + 1
+    
+    for (sample in c("Day_0", "Day_2", "Day_10")) {
+        obj <- readRDS(sprintf("../data/si.%s.%s.Rds", dr_method, sample))
+        si <- mean(obj[, 'sil_width'])
+        
+        df_list[[idx]] <- data.frame(si=si,
+                                        dr_method=dr_method,
+                                        data = sample)
+        idx <- idx + 1
+    }
+}
+
+df <- Reduce(rbind, df_list)
+df$dr_method <- stringr::str_replace_all(df$dr_method, c("LSI" = "Cusanovich2018",
+                                                         "snapATAC" = "SnapATAC"))
+
+
+p <- df %>%
+    ggplot(aes(x = data, y = si)) + 
+    geom_bar(aes(fill = dr_method), position = "dodge", stat = "identity") +
+    scale_fill_manual(values = cols) +
+    xlab("") + ylab("Silhouette score") +
+    theme_cowplot() +
+    theme(legend.title = element_blank(),
+          axis.text.x = element_text(angle = 60, hjust = 1))
+
+p
+
+```
+
+## Ranking
+```{r, fig.height=4, fig.width=3}
+df <- group_by(df, data) %>%
+    mutate(rank = rank(si))
+
+
+df$dr_method <- factor(df$dr_method, levels = c("scOpen", "cisTopic",
+                                                "SnapATAC", "Cusanovich2018"))
+
+p <- ggplot(data = df, aes(x = reorder(dr_method, -rank, FUN = median), 
+                               y = rank, fill = dr_method)) +
+        geom_boxplot() +
+    scale_fill_manual(values = cols) +
+        xlab("") + ylab("") +
+        theme_cowplot() +
+        theme(legend.title = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.text.x = element_text(angle = 60, hjust = 1),
+              legend.position = "none")
+
+p
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

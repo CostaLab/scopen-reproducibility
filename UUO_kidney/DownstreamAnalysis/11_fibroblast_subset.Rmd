@@ -1,0 +1,76 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+```
+
+
+```{r load_data}
+uuo.atac <- readRDS("../data/uuo.integrated.annotated.scOpen.Rds")
+Idents(uuo.atac) <- "CellType"
+uuo.atac.fib <- subset(uuo.atac, idents = 'Fibroblast')
+saveRDS(uuo.atac.fib, "../data/uuo.Fibroblast.scOpen.Rds")
+
+
+proj <- loadArchRProject(path = "../../ArchR/UUO")
+
+# select all fibroblasts
+proj <- subsetArchRProject(proj, 
+                           cells = colnames(uuo.atac.fib),
+                           outputDirectory = "../data/Fibroblast",
+                           force = TRUE)
+
+
+proj@cellColData$Sample2 <- stringr::str_replace_all(proj@cellColData$Sample,
+                                                    c("D0_1" = "Day 0",
+                                                   "D0_2" = "Day 0",
+                                                   "D2_1" = "Day 2",
+                                                   "D2_2" = "Day 2",
+                                                   "D10_1" = "Day 10",
+                                                   "D10_2" = "Day 10"))
+
+proj@cellColData$Sample2 <- factor(proj@cellColData$Sample2, levels = c("Day 0",
+                                                      "Day 2",
+                                                      "Day 10"))
+
+cols.samples <- c("Day 0" = "#e41a1c",
+                  "Day 2" = "#377eb8",
+                  "Day 10" = "#4daf4a")
+
+```
+
+
+## save data
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+
+
+## Session information
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,460 @@
+---
+title: "Integration of scATAC-seq with raw data as input"
+author: "Zhijian Li"
+date: "July 31, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(Seurat)
+library(stringr)
+library(magrittr)
+library(readr)
+library(Matrix)
+library(tidyr)
+library(dplyr)
+library(plotly)
+library(Signac)
+library(cluster)
+library(mclust)
+library(cowplot)
+library(gridExtra)
+library(ArchR)
+library(foreach)
+library(WriteXLS)
+library(caret)
+library(harmony)
+```
+
+
+```{r load_data}
+obj <- readRDS("../data/uuo.Fibroblast.scOpen.Rds")
+proj <- loadArchRProject(path = "../data/Fibroblast")
+```
+
+## add umap and dim. reduction to ArchR project
+```{r, fig.width=10, fig.height=4}
+proj@reducedDims[['scOpen']] <- SimpleList(matDR = obj@reductions$scOpen@cell.embeddings,
+                                      params = NULL, date = Sys.time(), scaleDims = NA, 
+        corToDepth = NA)
+
+proj@reducedDims[['harmony']] <- SimpleList(matDR = obj@reductions$harmony@cell.embeddings,
+                                      params = NULL, date = Sys.time(), scaleDims = NA, 
+        corToDepth = NA)
+
+proj <- addUMAP(
+    ArchRProj = proj, 
+    reducedDims = "harmony", 
+    name = "UMAP_Fib", 
+    nNeighbors = 30, 
+    minDist = 0.5, 
+    metric = "cosine",
+    force = TRUE
+)
+
+embedding <- as.data.frame(obj@reductions$umap_harmony_v2@cell.embeddings)
+
+colnames(embedding) <- c("Harmony#UMAP_Dimension_1",
+                         "Harmony#UMAP_Dimension_2")
+
+proj@embeddings[['umap_harmony']] <- SimpleList(df = embedding,
+                                      params = NULL)
+
+
+p1 <- plotEmbedding(ArchRProj = proj,
+                   embedding = "umap_harmony",
+                   colorBy = "cellColData",
+                   name = "Sample2",
+                   plotAs = "points",
+                   labelAsFactors = FALSE) +
+    theme_cowplot() +
+    xlab("UMAP 1") + ylab("UMAP 2") +
+    ggtitle("")
+
+p2 <- plotEmbedding(ArchRProj = proj,
+                   embedding = "UMAP_Fib",
+                   colorBy = "cellColData",
+                   name = "Sample2",
+                   plotAs = "points",
+                   labelAsFactors = FALSE) +
+    theme_cowplot() +
+    xlab("UMAP 1") + ylab("UMAP 2") +
+    ggtitle("")
+
+ggAlignPlots(p1, p2, type = "h")
+```
+
+
+```{r}
+proj <- addImputeWeights(proj, reducedDims = "harmony")
+
+p1 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Col1a1", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +theme_cowplot()
+
+
+p2 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Postn", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p3 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Scara5", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p4 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Pdgfrb", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p5 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Notch3", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p6 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Rgs5", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+
+p7 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Cspg4", 
+    embedding = "UMAP_Fib",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p1
+p2
+p3
+p4
+p5
+p6
+p7
+```
+
+## clustering
+```{r}
+proj <- addClusters(
+    input = proj,
+    reducedDims = "harmony",
+    method = "Seurat",
+    name = "Clusters",
+    resolution = 0.8,
+    force = TRUE,
+    annoy.metric = "cosine",
+    maxClusters = 3
+)
+
+p1 <- plotEmbedding(ArchRProj = proj,
+                   embedding = "UMAP_Fib",
+                   colorBy = "cellColData",
+                   name = "Clusters",
+                   plotAs = "points",
+                   labelAsFactors = FALSE) +
+    theme_cowplot() +
+    xlab("UMAP 1") + ylab("UMAP 2") +
+    ggtitle("")
+
+p2 <- plotGroups(ArchRProj = proj, groupBy = "Clusters", colorBy = "cellColData",
+                 name = "DoubletEnrichment", plotAs = "violin")
+
+
+p1
+p2
+```
+
+
+
+## Diffusiion map
+```{r, fig.width=10, fig.height=4}
+library(destiny)
+
+#matDR <- proj@embeddings$UMAP_Fib$df
+matDR <- proj@reducedDims$harmony$matDR
+
+dm <- DiffusionMap(as.matrix(matDR),
+                   verbose = TRUE)
+
+plot(dm)
+
+embedding <- as.data.frame(dm)[, c("DC1", "DC2")]
+
+colnames(embedding) <- c("Harmony#DC_Dimension_1",
+                         "Harmony#DC_Dimension_2")
+
+proj@embeddings[["dm"]] <- SimpleList(df = as.data.frame(embedding),
+                                      params = NULL)
+
+p1 <- plotEmbedding(ArchRProj = proj,
+                   embedding = "dm",
+                   colorBy = "cellColData",
+                   name = "Sample2",
+                   plotAs = "points",
+                   labelAsFactors = FALSE) +
+    theme_cowplot() +
+    xlab("DC 1") + ylab("DC 2") +
+    ggtitle("")
+
+p2 <- plotEmbedding(ArchRProj = proj,
+                   embedding = "dm",
+                   colorBy = "cellColData",
+                   name = "Clusters",
+                   plotAs = "points",
+                   labelAsFactors = FALSE) +
+    theme_cowplot() +
+    xlab("DC 1") + ylab("DC 2") +
+    ggtitle("")
+
+ggAlignPlots(p1, p2, type = "h")
+
+```
+
+```{r}
+p1 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Col1a1", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95)
+) +theme_cowplot()
+
+
+p2 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Postn", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95)
+) +
+    theme_cowplot()
+
+p3 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Scara5", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95)
+) +
+    theme_cowplot()
+
+p4 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Pdgfrb", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p5 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Notch3", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p6 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Rgs5", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+
+p7 <- plotEmbedding(
+    ArchRProj = proj, 
+    colorBy = "GeneScoreMatrix", 
+    name = "Cspg4", 
+    embedding = "dm",
+    quantCut = c(0.01, 0.95),
+) +
+    theme_cowplot()
+
+p1
+p2
+p3
+p4
+p5
+p6
+p7
+```
+
+
+## find marker genes
+```{r, fig.height=8, fig.width=6}
+markersGS <- getMarkerFeatures(
+    ArchRProj = proj, 
+    useMatrix = "GeneScoreMatrix", 
+    groupBy = "Clusters",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon",
+    verbose = FALSE
+)
+
+markerList <- getMarkers(markersGS, cutOff = "FDR <= 0.01 & Log2FC >= 1")
+
+heatmapGS <- plotMarkerHeatmap(
+  seMarker = markersGS, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1"
+)
+
+ComplexHeatmap::draw(heatmapGS, 
+                     heatmap_legend_side = "bot", 
+                     annotation_legend_side = "bot",
+                     show_column_dend = FALSE)
+
+markerList <- lapply(markerList, as.data.frame)
+
+saveRDS(markersGS, file = "../data/Fibroblast/MarkerGenesForClusters.Rds")
+
+for(i in 1:length(markerList)){
+    markerList[[i]] <- markerList[[i]][order(-markerList[[i]]$Log2FC), ]
+}
+
+WriteXLS(markerList,
+         ExcelFileName = "../data/Fibroblast/MarkerGenesForClusters.xlsx",
+         SheetNames = names(markerList))
+
+```
+
+
+## add annotation
+```{r, fig.height=4, fig.width=6}
+proj@cellColData$CellType <- stringr::str_replace_all(proj@cellColData$Clusters,
+                                                      c("C1" = "Pericytes",
+                                                        "C2" = "Myofibroblast",
+                                                        "C3" = "Fib_Scara5"))
+
+df <- as.data.frame(proj@cellColData)
+
+pal <- ArchR::paletteDiscrete(values = df$CellType)
+
+df.plot <- df %>%
+    group_by(Sample2, CellType) %>%
+    summarise(counts = n()) %>%
+    mutate(frac = counts / sum(counts))
+
+df.plot$Sample2 <- factor(df.plot$Sample2, levels = c("Day 0", "Day 2", "Day 10"))
+
+p <- ggplot(data = df.plot, aes(x = Sample2, y = frac, fill = CellType)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = pal) +
+    facet_wrap(~CellType, nrow = 1, scales = "free_y") +
+    xlab("") + ylab("Fraction of cells") +
+    theme_cowplot() +
+    theme(legend.position = "none",
+          axis.text.x = element_text(angle = 30, hjust = 1))
+
+p
+```
+
+## Peak calling
+```{r peak_calling}
+proj <- addGroupCoverages(ArchRProj = proj, 
+                          groupBy = "pam_clusters",
+                          force = TRUE)
+
+pathToMacs2 <- findMacs2()
+
+proj <- addReproduciblePeakSet(
+    ArchRProj = proj, 
+    groupBy = "pam_clusters", 
+    pathToMacs2 = pathToMacs2
+)
+
+getPeakSet(proj)
+
+proj <- addPeakMatrix(proj)
+
+getAvailableMatrices(proj)
+
+
+peakMatrix <- getMatrixFromProject(proj,
+                                   useMatrix = "PeakMatrix")
+
+counts <- peakMatrix@assays@data$PeakMatrix
+df_rangers <- as.data.frame(peakMatrix@rowRanges@ranges)
+
+rownames(counts) <- paste(peakMatrix@rowRanges@seqnames,
+                          df_rangers$start,
+                          df_rangers$end,
+                          sep = "_") 
+
+saveRDS(counts, file = "../data/Fibroblast/PeakMatrix.Rds")
+
+
+if(!dir.exists("../data/Fibroblast/filtered_peak_bc_matrix")){
+    dir.create("../data/Fibroblast/filtered_peak_bc_matrix")
+}
+
+writeMM(counts, file = "../data/Fibroblast/filtered_peak_bc_matrix/matrix.mtx")
+barcodes <- as.data.frame(colnames(counts))
+peaks <- as.data.frame(stringr::str_split_fixed(rownames(counts), "_", 3))
+
+write.table(barcodes, file = "../data/Fibroblast/filtered_peak_bc_matrix/barcodes.tsv", 
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(peaks, file = "../data/Fibroblast/filtered_peak_bc_matrix/peaks.bed", 
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+
+## add motif matrix
+```{r}
+proj <- addMotifAnnotations(ArchRProj = proj, 
+                                 motifSet = "cisbp", 
+                                 name = "Motif",
+                            force = TRUE)
+proj <- addBgdPeaks(proj, force = TRUE)
+
+proj <- addDeviationsMatrix(
+  ArchRProj = proj, 
+  peakAnnotation = "Motif",
+  force = TRUE
+)
+```
+
+## save data
+```{r}
+saveArchRProject(ArchRProj = proj, 
+                 load = FALSE)
+```
+
+
+## Session information
+```{r}
+sessionInfo()
+```
