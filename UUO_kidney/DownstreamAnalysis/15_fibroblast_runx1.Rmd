@@ -132,33 +132,9 @@ get_evaluate <- function(p2g_list, final_prediction){
     runx1_p2g <- df_p2g[as.integer(o@from), ]
     
     runx1_p2g <- runx1_p2g %>%
-        group_by(gene)
-    
-    if(final_prediction == "abs_avg"){
-        runx1_p2g <- runx1_p2g %>%
-            summarise(Correlation = abs(mean(Correlation))) %>%
-            as.data.frame()
-    } else if(final_prediction == "abs_max"){
-                runx1_p2g <- runx1_p2g %>%
-            summarise(Correlation = abs(max(Correlation))) %>%
-            as.data.frame()
-    } else if(final_prediction == "abs_sum"){
-        runx1_p2g <- runx1_p2g %>%
-            summarise(Correlation = abs(sum(Correlation))) %>%
-            as.data.frame()
-    } else if(final_prediction == "avg_abs"){
-                runx1_p2g <- runx1_p2g %>%
-            summarise(Correlation = mean(abs(Correlation))) %>%
-            as.data.frame()
-    } else if(final_prediction == "max"){
-                runx1_p2g <- runx1_p2g %>%
-            summarise(Correlation = max(Correlation)) %>%
-            as.data.frame()
-    } else if(final_prediction == "max_abs"){
-                        runx1_p2g <- runx1_p2g %>%
-            summarise(Correlation = max(abs(Correlation))) %>%
-            as.data.frame()
-    }
+        group_by(gene) %>%
+        summarise(Correlation = abs(max(Correlation))) %>%
+        as.data.frame()
     
     rownames(runx1_p2g) <- runx1_p2g$gene
     commonGene <- intersect(runx1_p2g$gene, de_res$gene)
@@ -207,39 +183,6 @@ get_evaluate <- function(p2g_list, final_prediction){
 
 ## evaluation of peak-to-gene links using DE genes
 ```{r, fig.height=5, fig.width=10}
-p2g_list <- list(Raw = df_p2g_raw,
-                scOpen = df_p2g_scopen,
-                MAGIC = df_p2g_magic,
-                cisTopic = df_p2g_cisTopic,
-                SCALE = df_p2g_SCALE)
-
-res_list <- get_evaluate(p2g_list, final_prediction = "abs_avg")
-
-df <- res_list[[1]]
-df.aupr1 <- res_list[[2]]
-background_pre <- res_list[[3]]
-
-p1 <- ggplot(data = df, aes(x = Recall, y = Precision)) +
-  geom_line(aes(color = Method)) +
-  geom_hline(yintercept = background_pre) +
-  theme_cowplot() +
-    ggtitle("abs(avg)")
-
-p2 <- ggplot(data = df.aupr1, aes(x =reorder(method, -aupr), 
-                                 y = aupr, fill = method)) +
-  geom_bar(stat = "identity")+
-    theme_cowplot() +
-    xlab("") +
-    theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
-    ggtitle("abs(avg)")
-
-p1 + p2
-
-saveRDS(res_list, file = "../data/Fibroblast/abs_avg.Rds")
-```
-
-## evaluation of peak-to-gene links using DE genes
-```{r, fig.height=5, fig.width=10}
 
 res_list <- get_evaluate(p2g_list, final_prediction = "abs_max")
 
@@ -267,140 +210,6 @@ p1 + p2
 
 saveRDS(res_list, file = "../data/Fibroblast/abs_max.Rds")
 ```
-
-## evaluation of peak-to-gene links using DE genes
-```{r, fig.height=5, fig.width=10}
-
-res_list <- get_evaluate(p2g_list, final_prediction = "abs_sum")
-
-df <- res_list[[1]]
-df.aupr3 <- res_list[[2]]
-background_pre <- res_list[[3]]
-
-p1 <- ggplot(data = df, aes(x = Recall, y = Precision)) +
-  geom_line(aes(color = Method)) +
-  geom_hline(yintercept = background_pre) +
-  theme_cowplot()+
-    ggtitle("abs(sum)")
-
-
-p2 <- ggplot(data = df.aupr3, aes(x =reorder(method, -aupr), 
-                                 y = aupr, fill = method)) +
-  geom_bar(stat = "identity")+
-    theme_cowplot() +
-        xlab("") +
-    theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
-    ggtitle("abs(sum)")
-
-p1 + p2
-
-saveRDS(res_list, file = "../data/Fibroblast/abs_sum.Rds")
-```
-## evaluation of peak-to-gene links using DE genes
-```{r, fig.height=5, fig.width=10}
-
-res_list <- get_evaluate(p2g_list, final_prediction = "avg_abs")
-
-df <- res_list[[1]]
-df.aupr4 <- res_list[[2]]
-background_pre <- res_list[[3]]
-
-p1 <- ggplot(data = df, aes(x = Recall, y = Precision)) +
-  geom_line(aes(color = Method)) +
-  geom_hline(yintercept = background_pre) +
-  theme_cowplot()+
-    ggtitle("avg(abs)")
-
-p2 <- ggplot(data = df.aupr4, aes(x =reorder(method, -aupr), 
-                                 y = aupr, fill = method)) +
-  geom_bar(stat = "identity")+
-    theme_cowplot() +
-        xlab("") +
-    theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
-    ggtitle("avg(abs)")
-
-p1 + p2
-
-saveRDS(res_list, file = "../data/Fibroblast/avg_abs.Rds")
-```
-
-## evaluation of peak-to-gene links using DE genes
-```{r, fig.height=5, fig.width=10}
-res_list <- get_evaluate(p2g_list, final_prediction = "max")
-
-df <- res_list[[1]]
-df.aupr5 <- res_list[[2]]
-background_pre <- res_list[[3]]
-
-p1 <- ggplot(data = df, aes(x = Recall, y = Precision)) +
-  geom_line(aes(color = Method)) +
-  geom_hline(yintercept = background_pre) +
-  theme_cowplot()+
-    ggtitle("max")
-
-p2 <- ggplot(data = df.aupr5, aes(x =reorder(method, -aupr), 
-                                 y = aupr, fill = method)) +
-  geom_bar(stat = "identity")+
-    theme_cowplot() +
-        xlab("") +
-    theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
-    ggtitle("max")
-
-p1 + p2
-
-saveRDS(res_list, file = "../data/Fibroblast/max.Rds")
-```
-
-## evaluation of peak-to-gene links using DE genes
-```{r, fig.height=5, fig.width=10}
-res_list <- get_evaluate(p2g_list, final_prediction = "max_abs")
-
-df <- res_list[[1]]
-df.aupr6 <- res_list[[2]]
-background_pre <- res_list[[3]]
-
-p1 <- ggplot(data = df, aes(x = Recall, y = Precision)) +
-  geom_line(aes(color = Method)) +
-  geom_hline(yintercept = background_pre) +
-  theme_cowplot()+
-    ggtitle("max(abs)")
-
-p2 <- ggplot(data = df.aupr6, aes(x =reorder(method, -aupr), 
-                                 y = aupr, fill = method)) +
-  geom_bar(stat = "identity")+
-    theme_cowplot() +
-        xlab("") +
-    theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
-    ggtitle("max(abs)")
-
-p1 + p2
-
-saveRDS(res_list, file = "../data/Fibroblast/max_abs.Rds")
-```
-
-## ranking
-```{r, fig.height=5, fig.width=5}
-df.aupr1$cor <- "abs_avg"
-df.aupr2$cor <- "abs_max"
-df.aupr3$cor <- "abs_sum"
-df.aupr4$cor <- "avg_abs"
-df.aupr5$cor <- "max"
-df.aupr6$cor <- "max_abs"
-
-df <- rbind(df.aupr1, df.aupr2, df.aupr3, df.aupr4,
-            df.aupr5, df.aupr6)
-
-df.plot <- df %>%
-  group_by(cor) %>%
-    mutate(rank = order(order(aupr, decreasing=TRUE))) %>%
-    ungroup()
-
-p <- ggplot(data = df.plot, aes(x = reorder(method, rank, mean), y = rank, fill = method)) +
-  geom_boxplot()
-
-p
-```
-
 
 ## Session information
 ```{r}
