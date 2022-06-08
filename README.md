@@ -8,18 +8,7 @@ imputed matrix from all methods, clustering results using
 imputed matrices, dimension reduction results, clustering using the dimension reduced matrices, 
 downstream analysis, silhouette score, etc.
 
-Cell lines dataset
-* [Count matirx](https://www.dropbox.com/s/6ok2toufvvzbezg/TagCount.txt?dl=0)
-* [Metadata](https://www.dropbox.com/s/knqqmn2hx3ip621/stat.txt?dl=0)
-* [Imputation](https://www.dropbox.com/sh/wcjmxolsg62t7g9/AABQW66GPZP4m5_r4iaKvRKfa?dl=0)
-* [Clusters of imputation matrix](https://www.dropbox.com/sh/qt1vxs6yb185oo3/AAC3h_xJ0dvUOrm2QABu5uHpa?dl=0)
-* [AUPR of imputation](https://www.dropbox.com/sh/65ndajzitrlsr3p/AABjKN-w9WLG73QMXVCMtpdSa?dl=0)
-* [Dimension reduction](https://www.dropbox.com/sh/kk9lgm5n18qyvcn/AAADGB4qDKpZwu8zbttCieOya?dl=0)
-* [Clusters of dimension reduction matrix](https://www.dropbox.com/sh/yhb39p9d9vfj1he/AAA6xQ2zSTDxaQNXSwW2oMU-a?dl=0)
-* [Downstream analysis](https://www.dropbox.com/sh/t9p67t43je1w8oe/AACWlZaouI6w2jx5EZk3xfSoa?dl=0)
-* [Silhouette score of imputation](https://www.dropbox.com/sh/lkeyo5a6oqcp93y/AAAtwThlocgFb7eyA2zFtv3Oa?dl=0)
-* [Silhouette score of dimension reduction](https://www.dropbox.com/sh/i3ynf6es6hjuoxx/AACvMJaoxw3W0_4k499PnkGZa?dl=0)
-* [Silhouette score of downstream analysis](https://www.dropbox.com/sh/m08ykkeoxbl0abd/AADFxQXy2qzU5Y5Nc0KOqx_Oa?dl=0)
+* [Cell lines dataset](https://costalab.ukaachen.de/open_data/scOpen/CellLines/)
 
 HematopoieticCells 
 * [Count matrix](https://www.dropbox.com/s/pp45n1pcbldeqlq/TagCount.txt.gz?dl=0)
